@@ -1,0 +1,33 @@
+{
+  "name": "forza-telemetry",
+  "version": "1.0.0",
+  "description": "Forza Motorsport Car Dash 331-byte telemetry backend with TypeScript",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "clean": "rm -rf dist",
+    "test": "ts-node test-331-car-dash.ts"
+  },
+  "keywords": [
+    "forza",
+    "motorsport",
+    "telemetry",
+    "udp",
+    "websocket",
+    "racing",
+    "car-dash",
+    "331-byte"
+  ],
+  "author": "Senior TypeScript Engineer",
+  "license": "MIT",
+  "dependencies": {
+    "socket.io": "^4.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.5.0",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.1.6"
+  }
+}
