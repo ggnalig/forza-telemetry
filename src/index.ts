@@ -1,6 +1,9 @@
 // Main entry point for FULL Car Dash 331-byte telemetry system
 // Wires together UDP listener, parser, processor, and WebSocket server
 
+import * as dotenv from "dotenv";
+dotenv.config({ path: ".env.local" });
+
 import { UdpListener } from "./udp/listener";
 import { carDash331Parser } from "./udp/parser";
 import { TelemetryProcessor } from "./telemetry/processor";
@@ -33,7 +36,9 @@ class CarDashTelemetrySystem {
     // Handle invalid packet size
     this.udpListener.on("invalid_packet", (size: number) => {
       if (this.debugMode) {
-        this.telemetryLogger.logWarning(`Invalid packet size: ${size} bytes (expected 331)`);
+        this.telemetryLogger.logWarning(
+          `Invalid packet size: ${size} bytes (expected 331)`,
+        );
       }
     });
 
@@ -41,7 +46,9 @@ class CarDashTelemetrySystem {
     this.udpListener.on("error", (error: Error) => {
       this.telemetryLogger.logError("UDP Listener error", error.message);
       if (error.message.includes("Port 5300 is already in use")) {
-        console.error("❌ Port 5300 is already in use. Please ensure no other application is using this port.");
+        console.error(
+          "❌ Port 5300 is already in use. Please ensure no other application is using this port.",
+        );
         process.exit(1);
       }
     });
@@ -73,10 +80,9 @@ class CarDashTelemetrySystem {
 
       // Process/transform the data
       const processedData = this.telemetryProcessor.process(parsedData);
-
+      console.log(processedData, "<--> processed data");
       // Broadcast to WebSocket clients
       this.webSocketServer.broadcastTelemetry(processedData);
-
     } catch (error) {
       this.telemetryLogger.logError("Error handling telemetry data", error);
     }
@@ -91,7 +97,9 @@ class CarDashTelemetrySystem {
     try {
       console.log("🚀 Starting FULL Car Dash 331-byte telemetry system...");
       console.log("=".repeat(80));
-      console.log("🎯 FULL 331-BYTE CAR DASH FORMAT ACTIVE - ALL FIELDS IMPLEMENTED");
+      console.log(
+        "🎯 FULL 331-BYTE CAR DASH FORMAT ACTIVE - ALL FIELDS IMPLEMENTED",
+      );
       console.log("=".repeat(80));
 
       // Start UDP listener
@@ -117,7 +125,6 @@ class CarDashTelemetrySystem {
       console.log("• Debug mode support");
       console.log("");
       console.log("💡 Enable debug mode: Set DEBUG=true environment variable");
-
     } catch (error) {
       console.error("❌ Failed to start telemetry system:", error);
       throw error;
@@ -151,7 +158,7 @@ class CarDashTelemetrySystem {
     this.debugMode = enabled;
     this.telemetryLogger.setDebugMode(enabled);
     carDash331Parser.setDebugMode(enabled);
-    console.log(`Debug mode ${enabled ? 'enabled' : 'disabled'}`);
+    console.log(`Debug mode ${enabled ? "enabled" : "disabled"}`);
   }
 
   public getStatus(): {

@@ -19,7 +19,7 @@ export class TelemetryLogger {
     }
 
     // Telemetry Snapshot format (as specified) with new structured data
-    const snapshot = `Telemetry Snapshot: Speed: ${Math.round(data.performance.speedKmh)} km/h, RPM: ${Math.round(data.engine.rpm)}, Gear: ${data.input.gear}, Throttle: ${Math.round(data.input.throttle * 100)} %, Brake: ${Math.round(data.input.brake * 100)} %, Torque: ${Math.round(data.performance.torqueNm)} Nm, Power: ${Math.round(data.performance.powerKw)} kW, Boost: ${data.performance.boost.toFixed(1)} bar, Fuel: ${Math.round(data.performance.fuel)} %, Lap: ${data.lap.number}`;
+    const snapshot = `Telemetry Snapshot -->: Speed: ${Math.round(data.performance.speedKmh)} km/h, RPM: ${Math.round(data.engine.rpm)}, Gear: ${data.input.gear}, Throttle: ${Math.round(data.input.throttle * 100)} %, Brake: ${Math.round(data.input.brake * 100)} %, Torque: ${Math.round(data.performance.torqueNm)} Nm, Power: ${Math.round(data.performance.powerKw)} kW, Boost: ${data.performance.boost.toFixed(1)} bar, Fuel: ${data.performance.fuel.toFixed(1)} %, Lap: ${data.lap.number}`;
 
     console.log(snapshot);
     this.lastLogTime = now;

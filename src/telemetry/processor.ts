@@ -6,9 +6,15 @@ import {
   ParsedTelemetryData,
   ProcessedTelemetryData,
 } from "../types/telemetry";
+import { PhysicsValidator } from "./physics-validator";
 
 export class TelemetryProcessor {
   private lastProcessedTelemetry: TelemetryData | null = null;
+  private physicsValidator: PhysicsValidator;
+
+  constructor(debugMode = false) {
+    this.physicsValidator = new PhysicsValidator(debugMode);
+  }
 
   /**
    * Process and transform telemetry data
@@ -17,8 +23,22 @@ export class TelemetryProcessor {
   public process(rawData: ParsedTelemetryData): ProcessedTelemetryData {
     const telemetry = rawData.parsed;
 
+    // Apply physics validation and normalization
+    const physicsValidation =
+      this.physicsValidator.validatePhysicsData(telemetry);
+
+    // Update telemetry with validated physics data
+    const validatedTelemetry = {
+      ...telemetry,
+      performance: {
+        ...telemetry.performance,
+        torqueNm: physicsValidation.torque,
+        powerKw: physicsValidation.power,
+      },
+    };
+
     // Validate data consistency
-    const validatedData = this.validateTelemetryConsistency(telemetry);
+    const validatedData = this.validateTelemetryConsistency(validatedTelemetry);
 
     // Apply transformations
     const transformedData = this.transformTelemetryData(validatedData);

@@ -130,8 +130,9 @@ const RPM_MAX = 15000;
 const SPEED_MAX_KMH = 500; // Speed validation range
 
 export class CarDash331Parser {
-  private lastLogTime = 0;
-  private readonly LOG_INTERVAL = 500; // 500ms rate limit
+  constructor() {
+    // Constructor can be removed if no initialization needed
+  }
 
   /**
    * Parse FULL Car Dash 331-byte format with strict validation
@@ -339,7 +340,7 @@ export class CarDash331Parser {
 
       // Parse performance data (NO FALLBACKS - direct fields only)
       const speed = buffer.readFloatLE(CAR_DASH_OFFSETS.speed);
-      const power = buffer.readFloatLE(CAR_DASH_OFFSETS.power);
+      const power = buffer.readFloatLE(CAR_DASH_OFFSETS.power) / 1000;
       const torque = buffer.readFloatLE(CAR_DASH_OFFSETS.torque);
 
       // Validate speed and convert to km/h
@@ -359,7 +360,7 @@ export class CarDash331Parser {
 
       // Parse additional metrics
       const boost = buffer.readFloatLE(CAR_DASH_OFFSETS.boost);
-      const fuel = buffer.readFloatLE(CAR_DASH_OFFSETS.fuel);
+      const fuel = buffer.readFloatLE(CAR_DASH_OFFSETS.fuel) * 100;
       const distanceTraveled = buffer.readFloatLE(
         CAR_DASH_OFFSETS.distanceTraveled,
       );
@@ -373,7 +374,7 @@ export class CarDash331Parser {
       );
 
       // Parse race data
-      const lapNumber = buffer.readUInt16LE(CAR_DASH_OFFSETS.lapNumber);
+      const lapNumber = buffer.readUInt16LE(CAR_DASH_OFFSETS.lapNumber) + 1;
       const racePosition = buffer.readUInt8(CAR_DASH_OFFSETS.racePosition);
 
       // Parse control inputs (normalize u8 values)
@@ -567,9 +568,6 @@ export class CarDash331Parser {
         },
       };
 
-      // Mandatory logging every 500ms
-      this.logTelemetry(telemetry);
-
       return {
         raw: buffer,
         parsed: telemetry,
@@ -578,22 +576,6 @@ export class CarDash331Parser {
     } catch (error) {
       return null;
     }
-  }
-
-  /**
-   * Mandatory logging every 500ms
-   */
-  private logTelemetry(data: TelemetryData): void {
-    const now = Date.now();
-    if (now - this.lastLogTime < this.LOG_INTERVAL) {
-      return;
-    }
-
-    // Telemetry Snapshot format with key performance metrics
-    const snapshot = `Telemetry Snapshot: Speed: ${Math.round(data.performance.speedKmh)} km/h, RPM: ${Math.round(data.engine.rpm)}, Gear: ${data.input.gear}, Throttle: ${Math.round(data.input.throttle * 100)} %, Brake: ${Math.round(data.input.brake * 100)} %, Torque: ${Math.round(data.performance.torqueNm)} Nm, Power: ${Math.round(data.performance.powerKw)} kW, Boost: ${data.performance.boost.toFixed(1)} bar, Fuel: ${Math.round(data.performance.fuel)} %, Lap: ${data.lap.number}`;
-
-    console.log(snapshot);
-    this.lastLogTime = now;
   }
 
   /**
