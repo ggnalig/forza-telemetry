@@ -1,7 +1,11 @@
 // Telemetry Processor for Car Dash 331-byte format
-// Data transformation and validation layer
+// Data transformation and validation layer for structured telemetry
 
-import { TelemetryData, ParsedTelemetryData, ProcessedTelemetryData } from "../types/telemetry";
+import {
+  TelemetryData,
+  ParsedTelemetryData,
+  ProcessedTelemetryData,
+} from "../types/telemetry";
 
 export class TelemetryProcessor {
   private lastProcessedTelemetry: TelemetryData | null = null;
@@ -37,33 +41,98 @@ export class TelemetryProcessor {
     let validatedData = { ...data };
 
     // Validate speed vs RPM relationship
-    if (data.speed > 0 && data.rpm < 800) {
+    if (
+      data.performance.speedKmh > 0 &&
+      data.engine.rpm < data.engine.idleRpm
+    ) {
       // Engine should be running if car is moving
-      validatedData.rpm = Math.max(800, data.rpm);
+      validatedData.engine.rpm = Math.max(data.engine.idleRpm, data.engine.rpm);
     }
 
     // Validate gear vs speed relationship
-    if (data.gear === 0 && data.speed > 5) {
+    if (data.input.gear === 0 && data.performance.speedKmh > 5) {
       // Car shouldn't be moving fast in neutral
-      validatedData.speed = Math.min(5, data.speed);
+      validatedData.performance.speedKmh = Math.min(
+        5,
+        data.performance.speedKmh,
+      );
     }
 
     // Validate throttle vs brake relationship
-    if (data.throttle > 0.8 && data.brake > 0.8) {
+    if (data.input.throttle > 0.8 && data.input.brake > 0.8) {
       // Both pedals shouldn't be pressed hard simultaneously
-      validatedData.brake = Math.min(0.5, data.brake);
+      validatedData.input.brake = Math.min(0.5, data.input.brake);
     }
 
     // Validate tire temperature consistency
-    const avgTireTemp = (data.tireTempFrontLeft + data.tireTempFrontRight + 
-                        data.tireTempRearLeft + data.tireTempRearRight) / 4;
-    
+    const avgTireTemp =
+      (data.wheels.tireTemp.frontLeft +
+        data.wheels.tireTemp.frontRight +
+        data.wheels.tireTemp.rearLeft +
+        data.wheels.tireTemp.rearRight) /
+      4;
+
     if (avgTireTemp > 150) {
       // Unrealistic tire temperatures
-      validatedData.tireTempFrontLeft = Math.min(150, data.tireTempFrontLeft);
-      validatedData.tireTempFrontRight = Math.min(150, data.tireTempFrontRight);
-      validatedData.tireTempRearLeft = Math.min(150, data.tireTempRearLeft);
-      validatedData.tireTempRearRight = Math.min(150, data.tireTempRearRight);
+      validatedData.wheels.tireTemp.frontLeft = Math.min(
+        150,
+        data.wheels.tireTemp.frontLeft,
+      );
+      validatedData.wheels.tireTemp.frontRight = Math.min(
+        150,
+        data.wheels.tireTemp.frontRight,
+      );
+      validatedData.wheels.tireTemp.rearLeft = Math.min(
+        150,
+        data.wheels.tireTemp.rearLeft,
+      );
+      validatedData.wheels.tireTemp.rearRight = Math.min(
+        150,
+        data.wheels.tireTemp.rearRight,
+      );
+    }
+
+    // Validate tire wear consistency
+    const avgTireWear =
+      (data.wheels.tireWear.frontLeft +
+        data.wheels.tireWear.frontRight +
+        data.wheels.tireWear.rearLeft +
+        data.wheels.tireWear.rearRight) /
+      4;
+
+    if (avgTireWear < 0 || avgTireWear > 100) {
+      // Tire wear should be between 0-100%
+      validatedData.wheels.tireWear.frontLeft = Math.max(
+        0,
+        Math.min(100, data.wheels.tireWear.frontLeft),
+      );
+      validatedData.wheels.tireWear.frontRight = Math.max(
+        0,
+        Math.min(100, data.wheels.tireWear.frontRight),
+      );
+      validatedData.wheels.tireWear.rearLeft = Math.max(
+        0,
+        Math.min(100, data.wheels.tireWear.rearLeft),
+      );
+      validatedData.wheels.tireWear.rearRight = Math.max(
+        0,
+        Math.min(100, data.wheels.tireWear.rearRight),
+      );
+    }
+
+    // Validate suspension travel
+    const maxSuspensionTravel = 0.5; // 50cm max reasonable travel
+    if (data.wheels.suspensionTravel.frontLeft > maxSuspensionTravel) {
+      validatedData.wheels.suspensionTravel.frontLeft = maxSuspensionTravel;
+    }
+    if (data.wheels.suspensionTravel.frontRight > maxSuspensionTravel) {
+      validatedData.wheels.suspensionTravel.frontRight = maxSuspensionTravel;
+    }
+    if (data.wheels.suspensionTravel.rearLeft > maxSuspensionTravel) {
+      validatedData.wheels.suspensionTravel.rearLeft = maxSuspensionTravel;
+    }
+    if (data.wheels.suspensionTravel.rearRight > maxSuspensionTravel) {
+      validatedData.wheels.suspensionTravel.rearRight = maxSuspensionTravel;
     }
 
     return validatedData;
@@ -78,36 +147,53 @@ export class TelemetryProcessor {
 
     // Smooth lap times if they show unrealistic jumps
     if (this.lastProcessedTelemetry) {
-      const lastBestLap = this.lastProcessedTelemetry.bestLap;
-      const lastLastLap = this.lastProcessedTelemetry.lastLap;
-      
+      const lastBestLap = this.lastProcessedTelemetry.lap.best;
+      const lastLastLap = this.lastProcessedTelemetry.lap.last;
+
       // Validate lap time consistency
-      if (data.bestLap > 0 && data.bestLap < lastBestLap - 10) {
+      if (data.lap.best > 0 && data.lap.best < lastBestLap - 10) {
         // Best lap shouldn't improve by more than 10 seconds suddenly
-        transformedData.bestLap = Math.max(data.bestLap, lastBestLap - 1);
+        transformedData.lap.best = Math.max(data.lap.best, lastBestLap - 1);
       }
-      
-      if (data.lastLap > 0 && Math.abs(data.lastLap - lastLastLap) > 60) {
+
+      if (data.lap.last > 0 && Math.abs(data.lap.last - lastLastLap) > 60) {
         // Last lap shouldn't change by more than 60 seconds
-        transformedData.lastLap = lastLastLap;
+        transformedData.lap.last = lastLastLap;
       }
     }
 
     // Ensure race position is reasonable
-    if (data.racePosition < 1) {
-      transformedData.racePosition = 1;
-    } else if (data.racePosition > 24) {
+    if (data.lap.position < 1) {
+      transformedData.lap.position = 1;
+    } else if (data.lap.position > 24) {
       // Forza typically supports up to 24 cars
-      transformedData.racePosition = 24;
+      transformedData.lap.position = 24;
     }
 
     // Normalize AI assistance values
-    if (Math.abs(data.normalizedDrivingLine) > 1) {
-      transformedData.normalizedDrivingLine = Math.sign(data.normalizedDrivingLine);
+    if (Math.abs(data.ai.normalizedDrivingLine) > 1) {
+      transformedData.ai.normalizedDrivingLine = Math.sign(
+        data.ai.normalizedDrivingLine,
+      );
     }
-    
-    if (Math.abs(data.normalizedAIBrakeDifference) > 1) {
-      transformedData.normalizedAIBrakeDifference = Math.sign(data.normalizedAIBrakeDifference);
+
+    if (Math.abs(data.ai.normalizedAIBrakeDifference) > 1) {
+      transformedData.ai.normalizedAIBrakeDifference = Math.sign(
+        data.ai.normalizedAIBrakeDifference,
+      );
+    }
+
+    // Ensure fuel is within reasonable bounds
+    if (data.performance.fuel < 0 || data.performance.fuel > 100) {
+      transformedData.performance.fuel = Math.max(
+        0,
+        Math.min(100, data.performance.fuel),
+      );
+    }
+
+    // Ensure boost is non-negative
+    if (data.performance.boost < 0) {
+      transformedData.performance.boost = 0;
     }
 
     return transformedData;

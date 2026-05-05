@@ -1,4 +1,4 @@
-// Main entry point for Car Dash 331-byte telemetry system
+// Main entry point for FULL Car Dash 331-byte telemetry system
 // Wires together UDP listener, parser, processor, and WebSocket server
 
 import { UdpListener } from "./udp/listener";
@@ -33,9 +33,7 @@ class CarDashTelemetrySystem {
     // Handle invalid packet size
     this.udpListener.on("invalid_packet", (size: number) => {
       if (this.debugMode) {
-        this.telemetryLogger.logWarning(
-          `Invalid packet size: ${size} bytes (expected 331)`,
-        );
+        this.telemetryLogger.logWarning(`Invalid packet size: ${size} bytes (expected 331)`);
       }
     });
 
@@ -43,9 +41,7 @@ class CarDashTelemetrySystem {
     this.udpListener.on("error", (error: Error) => {
       this.telemetryLogger.logError("UDP Listener error", error.message);
       if (error.message.includes("Port 5300 is already in use")) {
-        console.error(
-          "❌ Port 5300 is already in use. Please ensure no other application is using this port.",
-        );
+        console.error("❌ Port 5300 is already in use. Please ensure no other application is using this port.");
         process.exit(1);
       }
     });
@@ -65,7 +61,7 @@ class CarDashTelemetrySystem {
 
   private handleIncomingTelemetry(buffer: Buffer): void {
     try {
-      // Parse the 331-byte Car Dash format
+      // Parse the FULL 331-byte Car Dash format
       const parsedData = carDash331Parser.parse(buffer);
 
       if (!parsedData) {
@@ -75,21 +71,12 @@ class CarDashTelemetrySystem {
       // Log telemetry snapshot (mandatory every 500ms)
       this.telemetryLogger.logTelemetry(parsedData.parsed);
 
-      // Log debug information if enabled
-      if (this.debugMode && parsedData.debugInfo) {
-        this.telemetryLogger.logDebug(
-          parsedData.debugInfo.rawSpeed || 0,
-          parsedData.debugInfo.speedSource,
-          parsedData.debugInfo.velocityComponents,
-          parsedData.debugInfo.computedSpeed,
-        );
-      }
-
       // Process/transform the data
       const processedData = this.telemetryProcessor.process(parsedData);
 
       // Broadcast to WebSocket clients
       this.webSocketServer.broadcastTelemetry(processedData);
+
     } catch (error) {
       this.telemetryLogger.logError("Error handling telemetry data", error);
     }
@@ -102,10 +89,10 @@ class CarDashTelemetrySystem {
     }
 
     try {
-      console.log("🚀 Starting Car Dash 331-byte telemetry system...");
-      console.log("=".repeat(70));
-      console.log("🎯 STRICT 331-BYTE CAR DASH FORMAT ACTIVE");
-      console.log("=".repeat(70));
+      console.log("🚀 Starting FULL Car Dash 331-byte telemetry system...");
+      console.log("=".repeat(80));
+      console.log("🎯 FULL 331-BYTE CAR DASH FORMAT ACTIVE - ALL FIELDS IMPLEMENTED");
+      console.log("=".repeat(80));
 
       // Start UDP listener
       await this.udpListener.start();
@@ -121,14 +108,16 @@ class CarDashTelemetrySystem {
       console.log("");
       console.log("🔧 System Features:");
       console.log("• EXACT 331-byte packet validation");
-      console.log("• Velocity-based speed calculation");
-      console.log("• Field priority system (direct → velocity fallback)");
+      console.log("• FULL format with ALL extended data fields");
+      console.log("• NO FALLBACKS - direct field usage only");
+      console.log("• Structured nested object output");
       console.log("• Comprehensive data validation");
       console.log("• Mandatory 500ms telemetry logging");
       console.log("• Real-time WebSocket streaming");
       console.log("• Debug mode support");
       console.log("");
       console.log("💡 Enable debug mode: Set DEBUG=true environment variable");
+
     } catch (error) {
       console.error("❌ Failed to start telemetry system:", error);
       throw error;
@@ -162,7 +151,7 @@ class CarDashTelemetrySystem {
     this.debugMode = enabled;
     this.telemetryLogger.setDebugMode(enabled);
     carDash331Parser.setDebugMode(enabled);
-    console.log(`Debug mode ${enabled ? "enabled" : "disabled"}`);
+    console.log(`Debug mode ${enabled ? 'enabled' : 'disabled'}`);
   }
 
   public getStatus(): {

@@ -5,7 +5,7 @@ import { TelemetryData } from "../types/telemetry";
 
 export class TelemetryLogger {
   private lastLogTime = 0;
-  private readonly LOG_INTERVAL = 0; // 500ms rate limit
+  private readonly LOG_INTERVAL = 500; // 500ms rate limit
   private debugMode = false;
 
   /**
@@ -18,8 +18,8 @@ export class TelemetryLogger {
       return;
     }
 
-    // Telemetry Snapshot format (as specified)
-    const snapshot = `Telemetry data: Speed: ${Math.round(data.speed)} km/h, RPM: ${Math.round(data.rpm)}, Gear: ${data.gear}, Throttle: ${Math.round(data.throttle * 100)} %, Brake: ${Math.round(data.brake * 100)} %, Torque: ${Math.round(data.torque)} Nm, Power: ${Math.round(data.power)} kW, Boost: ${data.boost.toFixed(1)} bar, Fuel: ${Math.round(data.fuel)} %, Lap: ${data.lapNumber}`;
+    // Telemetry Snapshot format (as specified) with new structured data
+    const snapshot = `Telemetry Snapshot: Speed: ${Math.round(data.performance.speedKmh)} km/h, RPM: ${Math.round(data.engine.rpm)}, Gear: ${data.input.gear}, Throttle: ${Math.round(data.input.throttle * 100)} %, Brake: ${Math.round(data.input.brake * 100)} %, Torque: ${Math.round(data.performance.torqueNm)} Nm, Power: ${Math.round(data.performance.powerKw)} kW, Boost: ${data.performance.boost.toFixed(1)} bar, Fuel: ${Math.round(data.performance.fuel)} %, Lap: ${data.lap.number}`;
 
     console.log(snapshot);
     this.lastLogTime = now;
