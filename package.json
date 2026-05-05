@@ -6,9 +6,9 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "ts-node src/index.ts",
+    "dev": "ts-node -r dotenv/config src/index.ts",
     "clean": "rm -rf dist",
-    "test": "ts-node test-331-car-dash.ts"
+    "test": "ts-node test/physics-validator.test.ts"
   },
   "keywords": [
     "forza",
@@ -23,6 +23,7 @@
   "author": "Senior TypeScript Engineer",
   "license": "MIT",
   "dependencies": {
+    "dotenv": "^17.4.2",
     "socket.io": "^4.7.2"
   },
   "devDependencies": {

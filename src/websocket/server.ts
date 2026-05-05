@@ -77,7 +77,7 @@ export class WebSocketServer {
     // Log broadcast statistics if in debug mode
     if (this.connectedClients > 0) {
       const telemetry = data.parsed;
-      console.log(`📡 Broadcasted telemetry to ${this.connectedClients} clients: ${Math.round(telemetry.speed)}km/h | ${Math.round(telemetry.rpm)}RPM | G${telemetry.gear}`);
+      console.log(`📡 Broadcasted telemetry to ${this.connectedClients} clients: ${Math.round(telemetry.performance.speedKmh)}km/h | ${Math.round(telemetry.engine.rpm)}RPM | G${telemetry.input.gear}`);
     }
   }
 

@@ -1,66 +1,175 @@
 // Car Dash 331-byte telemetry data types - Official Forza Motorsport format
 // All offsets and field types match official specification
+// FULL implementation with extended data as per specification
 
 export interface TelemetryData {
-  // Core telemetry fields
-  speed: number; // km/h (calculated from velocity or direct field)
-  rpm: number; // engine RPM
-  gear: number; // current gear (-1=reverse, 0=neutral, 1-10=forward)
-  throttle: number; // 0-1 normalized (Accel / 255)
-  brake: number; // 0-1 normalized (Brake / 255)
-  clutch: number; // 0-1 normalized (Clutch / 255)
-  handbrake: number; // 0-1 normalized (HandBrake / 255)
-  steer: number; // -1 to 1 normalized (Steer / 127)
+  // Core race state
+  isRaceOn: number;
+  timestamp: number;
+
+  // Engine data
+  engine: {
+    rpm: number;
+    maxRpm: number;
+    idleRpm: number;
+    cylinders: number;
+  };
+
+  // Motion data
+  motion: {
+    acceleration: {
+      x: number;
+      y: number;
+      z: number;
+    };
+    velocity: {
+      x: number;
+      y: number;
+      z: number;
+    };
+    angularVelocity: {
+      x: number;
+      y: number;
+      z: number;
+    };
+    orientation: {
+      yaw: number;
+      pitch: number;
+      roll: number;
+    };
+  };
+
+  // Wheel data
+  wheels: {
+    slipRatio: {
+      frontLeft: number;
+      frontRight: number;
+      rearLeft: number;
+      rearRight: number;
+    };
+    slipAngle: {
+      frontLeft: number;
+      frontRight: number;
+      rearLeft: number;
+      rearRight: number;
+    };
+    combinedSlip: {
+      frontLeft: number;
+      frontRight: number;
+      rearLeft: number;
+      rearRight: number;
+    };
+    rotationSpeed: {
+      frontLeft: number;
+      frontRight: number;
+      rearLeft: number;
+      rearRight: number;
+    };
+    suspensionTravel: {
+      frontLeft: number;
+      frontRight: number;
+      rearLeft: number;
+      rearRight: number;
+    };
+    suspensionMeters: {
+      frontLeft: number;
+      frontRight: number;
+      rearLeft: number;
+      rearRight: number;
+    };
+    onRumbleStrip: {
+      frontLeft: number;
+      frontRight: number;
+      rearLeft: number;
+      rearRight: number;
+    };
+    inPuddleDepth: {
+      frontLeft: number;
+      frontRight: number;
+      rearLeft: number;
+      rearRight: number;
+    };
+    surfaceRumble: {
+      frontLeft: number;
+      frontRight: number;
+      rearLeft: number;
+      rearRight: number;
+    };
+    tireTemp: {
+      frontLeft: number;
+      frontRight: number;
+      rearLeft: number;
+      rearRight: number;
+    };
+    tireWear: {
+      frontLeft: number;
+      frontRight: number;
+      rearLeft: number;
+      rearRight: number;
+    };
+  };
+
+  // Car data
+  car: {
+    ordinal: number;
+    class: number;
+    performanceIndex: number;
+    drivetrain: number;
+  };
 
   // Position data
-  positionX: number; // X position in world
-  positionY: number; // Y position in world
-  positionZ: number; // Z position in world
+  position: {
+    x: number;
+    y: number;
+    z: number;
+  };
 
-  // Velocity components (for fallback calculation)
-  velocityX: number; // X velocity (m/s)
-  velocityY: number; // Y velocity (m/s)
-  velocityZ: number; // Z velocity (m/s)
+  // Performance data
+  performance: {
+    speedKmh: number;
+    powerKw: number;
+    torqueNm: number;
+    boost: number;
+    fuel: number;
+  };
 
-  // Performance metrics
-  power: number; // engine power (kW)
-  torque: number; // engine torque (Nm)
-  boost: number; // turbo boost (bar)
-  fuel: number; // fuel level (0-100%)
+  // Lap data
+  lap: {
+    current: number;
+    last: number;
+    best: number;
+    number: number;
+    raceTime: number;
+    position: number;
+  };
 
-  // Lap timing data
-  bestLap: number; // best lap time (seconds)
-  lastLap: number; // last lap time (seconds)
-  currentLap: number; // current lap time (seconds)
-  currentRaceTime: number; // current race time (seconds)
-  lapNumber: number; // current lap number
-  racePosition: number; // current race position
-  distanceTraveled: number; // distance traveled (meters)
+  // Input data
+  input: {
+    throttle: number;
+    brake: number;
+    clutch: number;
+    handbrake: number;
+    gear: number;
+    steer: number;
+  };
 
-  // Tire temperatures
-  tireTempFrontLeft: number; // front left tire temp (°C)
-  tireTempFrontRight: number; // front right tire temp (°C)
-  tireTempRearLeft: number; // rear left tire temp (°C)
-  tireTempRearRight: number; // rear right tire temp (°C)
+  // Track data
+  track: {
+    ordinal: number;
+    distanceTraveled: number;
+  };
 
   // AI assistance data
-  normalizedDrivingLine: number; // -1 to 1 normalized
-  normalizedAIBrakeDifference: number; // -1 to 1 normalized
-
-  // Race state
-  isRaceOn: number; // 1=racing, 0=not racing
+  ai: {
+    normalizedDrivingLine: number;
+    normalizedAIBrakeDifference: number;
+  };
 }
 
 export interface ParsedTelemetryData {
   raw: Buffer;
   parsed: TelemetryData;
   timestamp: number;
-  debugInfo?: {
-    speedSource: "direct" | "velocity_fallback" | "error";
-    rawSpeed?: number;
-    computedSpeed?: number;
-    velocityComponents?: { vx: number; vy: number; vz: number };
-  };
 }
 
 export interface ProcessedTelemetryData {
