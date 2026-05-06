@@ -172,8 +172,32 @@ export interface ParsedTelemetryData {
   timestamp: number;
 }
 
+// Shift light system data
+export interface ShiftData {
+  state: "OFF" | "EARLY" | "OPTIMAL" | "LATE";
+  light: "⚫" | "🟢" | "🔵" | "🔴";
+  rpm: number;
+  rpmAfterShift: number | null;
+  rpmDrop: number | null;
+  optimal: boolean;
+  reason: string;
+  mode: "RPM" | "POWER" | "GEAR";
+  blink: boolean;
+  progressive: string[];
+  debug?: {
+    currentGear?: number;
+    nextGear?: number;
+    currentRatio?: number;
+    nextRatio?: number;
+    rpm?: number;
+    rpmRatio?: number;
+    thresholds?: object;
+  };
+}
+
 export interface ProcessedTelemetryData {
   raw: Buffer;
   parsed: TelemetryData;
   timestamp: number;
+  shift?: ShiftData;
 }

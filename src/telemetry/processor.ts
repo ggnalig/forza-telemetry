@@ -7,13 +7,16 @@ import {
   ProcessedTelemetryData,
 } from "../types/telemetry";
 import { PhysicsValidator } from "./physics-validator";
+import { GearAwareShiftService } from "../services/gear-aware-shift-service";
 
 export class TelemetryProcessor {
   private lastProcessedTelemetry: TelemetryData | null = null;
   private physicsValidator: PhysicsValidator;
+  private shiftService: GearAwareShiftService;
 
   constructor(debugMode = false) {
     this.physicsValidator = new PhysicsValidator(debugMode);
+    this.shiftService = new GearAwareShiftService();
   }
 
   /**
@@ -46,10 +49,14 @@ export class TelemetryProcessor {
     // Store for next validation
     this.lastProcessedTelemetry = transformedData;
 
+    // V3: Calculate gear-aware shift indicators
+    const shiftData = this.shiftService.calculateShift(transformedData);
+
     return {
       raw: rawData.raw,
       parsed: transformedData,
       timestamp: Date.now(),
+      shift: shiftData,
     };
   }
 

@@ -1,7 +1,7 @@
 // Debug logger for Car Dash 331-byte telemetry system
 // Rate-limited logging with comprehensive telemetry snapshots
 
-import { TelemetryData } from "../types/telemetry";
+import { TelemetryData, ShiftData } from "../types/telemetry";
 
 export class TelemetryLogger {
   private lastLogTime = 0;
@@ -23,6 +23,42 @@ export class TelemetryLogger {
 
     console.log(snapshot);
     this.lastLogTime = now;
+  }
+
+  /**
+   * Log shift light data with GT-style visualization
+   */
+  public logShiftData(shiftData: ShiftData): void {
+    if (!this.debugMode) return;
+
+    const progressiveStr = shiftData.progressive.join("");
+    const blinkIndicator = shiftData.blink ? " (BLINK)" : "";
+
+    console.log("🚦 GEAR-AWARE SHIFT SYSTEM V3:");
+    console.log(`  Progressive: ${progressiveStr}${blinkIndicator}`);
+    console.log(`  State: ${shiftData.state} | Light: ${shiftData.light}`);
+
+    if (shiftData.rpmAfterShift !== null) {
+      console.log(
+        `  RPM: ${shiftData.rpm} → After Shift: ${Math.round(shiftData.rpmAfterShift)} | Optimal: ${shiftData.optimal}`,
+      );
+    } else {
+      console.log(`  RPM: ${shiftData.rpm} | Optimal: ${shiftData.optimal}`);
+    }
+
+    console.log(`  Reason: ${shiftData.reason} | Mode: ${shiftData.mode}`);
+
+    if (shiftData.debug) {
+      if (shiftData.debug.currentGear !== undefined) {
+        console.log(
+          `  Debug: Gear ${shiftData.debug.currentGear} → ${shiftData.debug.nextGear}, Ratio: ${shiftData.debug.currentRatio?.toFixed(2)} → ${shiftData.debug.nextRatio?.toFixed(2)}`,
+        );
+      } else if (shiftData.debug.rpm !== undefined) {
+        console.log(`  Debug: RPM=${shiftData.debug.rpm}`);
+      }
+    }
+
+    console.log("");
   }
 
   /**

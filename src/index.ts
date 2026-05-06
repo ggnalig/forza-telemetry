@@ -80,7 +80,14 @@ class CarDashTelemetrySystem {
 
       // Process/transform the data
       const processedData = this.telemetryProcessor.process(parsedData);
+
+      // Log shift light data if available
+      // if (processedData.shift && this.debugMode) {
+      //   this.telemetryLogger.logShiftData(processedData.shift);
+      // }
+
       console.log(processedData, "<--> processed data");
+
       // Broadcast to WebSocket clients
       this.webSocketServer.broadcastTelemetry(processedData);
     } catch (error) {
