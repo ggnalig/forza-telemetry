@@ -176,4 +176,19 @@ export interface ProcessedTelemetryData {
   raw: Buffer;
   parsed: TelemetryData;
   timestamp: number;
+  efficiency?: {
+    map: {
+      [gear: number]: {
+        rpmMin: number;
+        rpmMax: number;
+        rpmAvg: number;
+        rpmOptimal: number;
+        shiftWindow: [number, number];
+      };
+    };
+    recommendations?: {
+      upshiftRecommended: boolean;
+      downshiftRecommended: boolean;
+    };
+  };
 }

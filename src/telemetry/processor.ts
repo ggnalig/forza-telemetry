@@ -7,13 +7,16 @@ import {
   ProcessedTelemetryData,
 } from "../types/telemetry";
 import { PhysicsValidator } from "./physics-validator";
+import { GearEfficiencyMapGenerator } from "../services/gear-efficiency-map-generator";
 
 export class TelemetryProcessor {
   private lastProcessedTelemetry: TelemetryData | null = null;
   private physicsValidator: PhysicsValidator;
+  private efficiencyMapGenerator: GearEfficiencyMapGenerator;
 
   constructor(debugMode = false) {
     this.physicsValidator = new PhysicsValidator(debugMode);
+    this.efficiencyMapGenerator = new GearEfficiencyMapGenerator();
   }
 
   /**
@@ -43,6 +46,14 @@ export class TelemetryProcessor {
     // Apply transformations
     const transformedData = this.transformTelemetryData(validatedData);
 
+    // Update efficiency map with current telemetry
+    const efficiencyResult = this.efficiencyMapGenerator.update({
+      gear: transformedData.input.gear,
+      rpm: transformedData.engine.rpm,
+      speed: transformedData.performance.speedKmh,
+      torque: transformedData.performance.torqueNm,
+    });
+
     // Store for next validation
     this.lastProcessedTelemetry = transformedData;
 
@@ -50,6 +61,10 @@ export class TelemetryProcessor {
       raw: rawData.raw,
       parsed: transformedData,
       timestamp: Date.now(),
+      efficiency: {
+        map: efficiencyResult.efficiencyMap,
+        recommendations: efficiencyResult.shiftRecommendations,
+      },
     };
   }
 

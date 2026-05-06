@@ -80,7 +80,7 @@ class CarDashTelemetrySystem {
 
       // Process/transform the data
       const processedData = this.telemetryProcessor.process(parsedData);
-      console.log(processedData, "<--> processed data");
+      console.dir(processedData, { depth: null });
       // Broadcast to WebSocket clients
       this.webSocketServer.broadcastTelemetry(processedData);
     } catch (error) {
