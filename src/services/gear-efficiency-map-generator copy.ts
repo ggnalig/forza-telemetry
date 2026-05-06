@@ -1,3 +1,5 @@
+import { carConfig } from "../config/car";
+
 export interface TelemetryFrame {
   gear: number;
   rpm: number;
@@ -18,7 +20,8 @@ export interface GearEfficiencyMap {
 }
 
 export interface ShiftRecommendations {
-  shiftRecommendation: string;
+  upshiftRecommended: boolean;
+  downshiftRecommended: boolean;
 }
 
 export class GearEfficiencyMapGenerator {
@@ -55,7 +58,8 @@ export class GearEfficiencyMapGenerator {
       return {
         efficiencyMap: this.efficiencyMap,
         shiftRecommendations: {
-          shiftRecommendation: "-",
+          upshiftRecommended: false,
+          downshiftRecommended: false,
         },
       };
     }
@@ -127,35 +131,27 @@ export class GearEfficiencyMapGenerator {
     gear: number,
     rpm: number,
   ): ShiftRecommendations {
+    if (gear < 1 || gear > 6) {
+      return { upshiftRecommended: false, downshiftRecommended: false };
+    }
+
     const stats = this.efficiencyMap[gear];
     if (!stats || this.sampleCounts[gear] < this.MIN_SAMPLES) {
-      return { shiftRecommendation: "-" };
+      return { upshiftRecommended: false, downshiftRecommended: false };
     }
 
-    const [windowMin, windowMax] = stats.shiftWindow;
-    // const upshiftThreshold = windowMax - 10;
-    // const downshiftThreshold = windowMin + 10;
-    // const upshiftThreshold = windowMax - (windowMax - windowMin) * 0.02;
-    // const downshiftThreshold = windowMin + (windowMax - windowMin) * 0.05;
+    const shiftSpeed = carConfig.shiftSpeed[gear - 1];
+    const idleRPM = carConfig.idleRPM;
+    const shiftRPM = idleRPM + (shiftSpeed / 45) * 5500;
+    const normalizedRPM = Math.max(0, (rpm - idleRPM) / (shiftRPM - idleRPM));
 
-    const windowSize = windowMax - windowMin;
-    const hysteresis = Math.max(50, windowSize * 0.03);
-
-    const upshiftThreshold = windowMax - hysteresis;
-    const downshiftThreshold = windowMin + hysteresis;
-
-    let shiftRecommendation = "";
-
-    if (rpm >= upshiftThreshold) {
-      shiftRecommendation = "upshift";
-    } else if (rpm <= downshiftThreshold) {
-      shiftRecommendation = "downshift";
-    } else {
-      shiftRecommendation = "no shift";
-    }
+    const upshiftRecommended = normalizedRPM >= 0.95 && gear >= 1 && gear <= 5;
+    const downshiftRecommended =
+      normalizedRPM <= 0.35 && gear >= 2 && gear <= 6;
 
     return {
-      shiftRecommendation,
+      upshiftRecommended,
+      downshiftRecommended,
     };
   }
 
@@ -200,10 +196,6 @@ export class GearEfficiencyMapGenerator {
 
   getEfficiencyMap(): GearEfficiencyMap {
     return { ...this.efficiencyMap };
-  }
-
-  getSampleCount(gear: number): number {
-    return this.sampleCounts[gear] || 0;
   }
 
   reset(): void {

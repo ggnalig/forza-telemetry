@@ -8,17 +8,17 @@ import {
 } from "../types/telemetry";
 import { PhysicsValidator } from "./physics-validator";
 import { GearEfficiencyMapGenerator } from "../services/gear-efficiency-map-generator";
-import { carConfig } from "../config/car";
+import { ShiftEngine } from "../services/shift-engine";
 
 export class TelemetryProcessor {
   private physicsValidator: PhysicsValidator;
   private efficiencyMapGenerator: GearEfficiencyMapGenerator;
-  private shiftLightBuffer: string[] = [];
-  private readonly MAX_BUFFER_SIZE = 6; //10
+  private shiftEngine: ShiftEngine;
 
   constructor(debugMode = false) {
     this.physicsValidator = new PhysicsValidator(debugMode);
     this.efficiencyMapGenerator = new GearEfficiencyMapGenerator();
+    this.shiftEngine = new ShiftEngine();
   }
 
   /**
@@ -56,11 +56,16 @@ export class TelemetryProcessor {
       torque: transformedData.performance.torqueNm,
     });
 
-    // Calculate GT3-style shift lights based on efficiency map
-    const shiftLights = this.calculateShiftLights(
-      transformedData.engine.rpm,
+    // Calculate hybrid shift recommendations using new ShiftEngine
+    const hybridShiftData = this.shiftEngine.update(
       transformedData.input.gear,
-      efficiencyResult.efficiencyMap[transformedData.input.gear],
+      transformedData.engine.rpm,
+      transformedData.performance.speedKmh,
+      efficiencyResult.efficiencyMap[transformedData.input.gear]?.rpmOptimal ||
+        0,
+      this.efficiencyMapGenerator.getSampleCount(transformedData.input.gear) ||
+        0,
+      transformedData.input.throttle,
     );
 
     return {
@@ -69,61 +74,15 @@ export class TelemetryProcessor {
       timestamp: Date.now(),
       efficiency: {
         map: efficiencyResult.efficiencyMap,
-        recommendations: efficiencyResult.shiftRecommendations,
-        lights: shiftLights,
+        recommendations: {
+          upshiftRecommended: hybridShiftData.recommendation === "upshift",
+          downshiftRecommended: hybridShiftData.recommendation === "downshift",
+        },
+        lights: hybridShiftData.lights || [],
         currentRpm: transformedData.engine.rpm,
+        finalShiftRPM: hybridShiftData.finalShiftRPM,
       },
     };
-  }
-
-  /**
-   * Calculate GT3-style shift light colors based on RPM normalization
-   */
-  private calculateShiftLights(
-    rpm: number,
-    gear: number,
-    efficiencyStats:
-      | {
-          rpmMin: number;
-          rpmMax: number;
-          rpmAvg: number;
-          rpmOptimal: number;
-          shiftWindow: [number, number];
-        }
-      | undefined,
-  ): string[] {
-    if (!efficiencyStats || !efficiencyStats.shiftWindow) {
-      return new Array(this.MAX_BUFFER_SIZE).fill("⚫");
-    }
-
-    const shiftSpeed = carConfig.shiftSpeed[gear] || 100;
-    const idleRPM = carConfig.idleRPM;
-    const firstGearShiftSpeed = carConfig.shiftSpeed[1] || 45;
-    const shiftRPM =
-      idleRPM + ((shiftSpeed - 25) / (firstGearShiftSpeed - 25)) * 5500;
-
-    let normalizedRPM = (rpm - idleRPM) / (shiftRPM - idleRPM);
-    normalizedRPM = Math.max(0, normalizedRPM);
-
-    let lightColor: string;
-    if (normalizedRPM < 0.4) {
-      lightColor = "🟢";
-    } else if (normalizedRPM < 0.65) {
-      lightColor = "🟡";
-    } else if (normalizedRPM < 0.85) {
-      lightColor = "🟠";
-    } else if (normalizedRPM < 1.0) {
-      lightColor = "🔴";
-    } else {
-      lightColor = "🔴";
-    }
-
-    this.shiftLightBuffer.push(lightColor);
-    if (this.shiftLightBuffer.length > this.MAX_BUFFER_SIZE) {
-      this.shiftLightBuffer.shift();
-    }
-
-    return [...this.shiftLightBuffer];
   }
 
   /**

@@ -192,5 +192,6 @@ export interface ProcessedTelemetryData {
     };
     lights?: string[];
     currentRpm?: number;
+    finalShiftRPM?: number;
   };
 }
