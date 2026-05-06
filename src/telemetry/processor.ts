@@ -8,11 +8,13 @@ import {
 } from "../types/telemetry";
 import { PhysicsValidator } from "./physics-validator";
 import { GearEfficiencyMapGenerator } from "../services/gear-efficiency-map-generator";
+import { carConfig } from "../config/car";
 
 export class TelemetryProcessor {
-  private lastProcessedTelemetry: TelemetryData | null = null;
   private physicsValidator: PhysicsValidator;
   private efficiencyMapGenerator: GearEfficiencyMapGenerator;
+  private shiftLightBuffer: string[] = [];
+  private readonly MAX_BUFFER_SIZE = 6; //10
 
   constructor(debugMode = false) {
     this.physicsValidator = new PhysicsValidator(debugMode);
@@ -54,8 +56,12 @@ export class TelemetryProcessor {
       torque: transformedData.performance.torqueNm,
     });
 
-    // Store for next validation
-    this.lastProcessedTelemetry = transformedData;
+    // Calculate GT3-style shift lights based on efficiency map
+    const shiftLights = this.calculateShiftLights(
+      transformedData.engine.rpm,
+      transformedData.input.gear,
+      efficiencyResult.efficiencyMap[transformedData.input.gear],
+    );
 
     return {
       raw: rawData.raw,
@@ -64,8 +70,60 @@ export class TelemetryProcessor {
       efficiency: {
         map: efficiencyResult.efficiencyMap,
         recommendations: efficiencyResult.shiftRecommendations,
+        lights: shiftLights,
+        currentRpm: transformedData.engine.rpm,
       },
     };
+  }
+
+  /**
+   * Calculate GT3-style shift light colors based on RPM normalization
+   */
+  private calculateShiftLights(
+    rpm: number,
+    gear: number,
+    efficiencyStats:
+      | {
+          rpmMin: number;
+          rpmMax: number;
+          rpmAvg: number;
+          rpmOptimal: number;
+          shiftWindow: [number, number];
+        }
+      | undefined,
+  ): string[] {
+    if (!efficiencyStats || !efficiencyStats.shiftWindow) {
+      return new Array(this.MAX_BUFFER_SIZE).fill("⚫");
+    }
+
+    const shiftSpeed = carConfig.shiftSpeed[gear] || 100;
+    const idleRPM = carConfig.idleRPM;
+    const firstGearShiftSpeed = carConfig.shiftSpeed[1] || 45;
+    const shiftRPM =
+      idleRPM + ((shiftSpeed - 25) / (firstGearShiftSpeed - 25)) * 5500;
+
+    let normalizedRPM = (rpm - idleRPM) / (shiftRPM - idleRPM);
+    normalizedRPM = Math.max(0, normalizedRPM);
+
+    let lightColor: string;
+    if (normalizedRPM < 0.4) {
+      lightColor = "🟢";
+    } else if (normalizedRPM < 0.65) {
+      lightColor = "🟡";
+    } else if (normalizedRPM < 0.85) {
+      lightColor = "🟠";
+    } else if (normalizedRPM < 1.0) {
+      lightColor = "🔴";
+    } else {
+      lightColor = "🔴";
+    }
+
+    this.shiftLightBuffer.push(lightColor);
+    if (this.shiftLightBuffer.length > this.MAX_BUFFER_SIZE) {
+      this.shiftLightBuffer.shift();
+    }
+
+    return [...this.shiftLightBuffer];
   }
 
   /**
@@ -135,28 +193,28 @@ export class TelemetryProcessor {
         data.wheels.tireWear.rearRight) /
       4;
 
-    if (avgTireWear < 0 || avgTireWear > 100) {
-      // Tire wear should be between 0-100%
-      validatedData.wheels.tireWear.frontLeft = Math.max(
-        0,
-        Math.min(100, data.wheels.tireWear.frontLeft),
+    if (avgTireWear > 0.9) {
+      // Unrealistic tire wear
+      validatedData.wheels.tireWear.frontLeft = Math.min(
+        0.9,
+        data.wheels.tireWear.frontLeft,
       );
-      validatedData.wheels.tireWear.frontRight = Math.max(
-        0,
-        Math.min(100, data.wheels.tireWear.frontRight),
+      validatedData.wheels.tireWear.frontRight = Math.min(
+        0.9,
+        data.wheels.tireWear.frontRight,
       );
-      validatedData.wheels.tireWear.rearLeft = Math.max(
-        0,
-        Math.min(100, data.wheels.tireWear.rearLeft),
+      validatedData.wheels.tireWear.rearLeft = Math.min(
+        0.9,
+        data.wheels.tireWear.rearLeft,
       );
-      validatedData.wheels.tireWear.rearRight = Math.max(
-        0,
-        Math.min(100, data.wheels.tireWear.rearRight),
+      validatedData.wheels.tireWear.rearRight = Math.min(
+        0.9,
+        data.wheels.tireWear.rearRight,
       );
     }
 
     // Validate suspension travel
-    const maxSuspensionTravel = 0.5; // 50cm max reasonable travel
+    const maxSuspensionTravel = 0.5; // 50cm max
     if (data.wheels.suspensionTravel.frontLeft > maxSuspensionTravel) {
       validatedData.wheels.suspensionTravel.frontLeft = maxSuspensionTravel;
     }
@@ -174,83 +232,28 @@ export class TelemetryProcessor {
   }
 
   /**
-   * Transform telemetry data for consistency
+   * Transform telemetry data
    */
   private transformTelemetryData(data: TelemetryData): TelemetryData {
-    // Apply additional transformations
     let transformedData = { ...data };
 
-    // Smooth lap times if they show unrealistic jumps
-    if (this.lastProcessedTelemetry) {
-      const lastBestLap = this.lastProcessedTelemetry.lap.best;
-      const lastLastLap = this.lastProcessedTelemetry.lap.last;
+    // Ensure fuel is percentage (0-100)
+    transformedData.performance.fuel = data.performance.fuel * 100;
 
-      // Validate lap time consistency
-      if (data.lap.best > 0 && data.lap.best < lastBestLap - 10) {
-        // Best lap shouldn't improve by more than 10 seconds suddenly
-        transformedData.lap.best = Math.max(data.lap.best, lastBestLap - 1);
-      }
-
-      if (data.lap.last > 0 && Math.abs(data.lap.last - lastLastLap) > 60) {
-        // Last lap shouldn't change by more than 60 seconds
-        transformedData.lap.last = lastLastLap;
-      }
-    }
-
-    // Ensure race position is reasonable
-    if (data.lap.position < 1) {
-      transformedData.lap.position = 1;
-    } else if (data.lap.position > 24) {
-      // Forza typically supports up to 24 cars
-      transformedData.lap.position = 24;
-    }
-
-    // Normalize AI assistance values
-    if (Math.abs(data.ai.normalizedDrivingLine) > 1) {
-      transformedData.ai.normalizedDrivingLine = Math.sign(
-        data.ai.normalizedDrivingLine,
-      );
-    }
-
-    if (Math.abs(data.ai.normalizedAIBrakeDifference) > 1) {
-      transformedData.ai.normalizedAIBrakeDifference = Math.sign(
-        data.ai.normalizedAIBrakeDifference,
-      );
-    }
-
-    // Ensure fuel is within reasonable bounds
-    if (data.performance.fuel < 0 || data.performance.fuel > 100) {
-      transformedData.performance.fuel = Math.max(
-        0,
-        Math.min(100, data.performance.fuel),
-      );
-    }
-
-    // Ensure boost is non-negative
-    if (data.performance.boost < 0) {
-      transformedData.performance.boost = 0;
-    }
+    // Clamp values to realistic ranges
+    transformedData.performance.speedKmh = Math.max(
+      0,
+      Math.min(500, transformedData.performance.speedKmh),
+    );
+    transformedData.performance.powerKw = Math.max(
+      0,
+      Math.min(1500, transformedData.performance.powerKw),
+    );
+    transformedData.performance.fuel = Math.max(
+      0,
+      Math.min(100, transformedData.performance.fuel),
+    );
 
     return transformedData;
-  }
-
-  /**
-   * Get processing statistics
-   */
-  public getStats(): {
-    lastProcessedTime: number | null;
-    isActive: boolean;
-  } {
-    return {
-      lastProcessedTime: this.lastProcessedTelemetry ? Date.now() : null,
-      isActive: this.lastProcessedTelemetry !== null,
-    };
-  }
-
-  /**
-   * Reset processor state
-   */
-  public reset(): void {
-    this.lastProcessedTelemetry = null;
   }
 }

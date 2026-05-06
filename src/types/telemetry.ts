@@ -190,5 +190,7 @@ export interface ProcessedTelemetryData {
       upshiftRecommended: boolean;
       downshiftRecommended: boolean;
     };
+    lights?: string[];
+    currentRpm?: number;
   };
 }
