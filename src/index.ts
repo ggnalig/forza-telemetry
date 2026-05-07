@@ -7,7 +7,7 @@ dotenv.config({ path: ".env.local" });
 import { UdpListener } from "./udp/listener";
 import { carDash331Parser } from "./udp/parser";
 import { TelemetryProcessor } from "./telemetry/processor";
-import { WebSocketServer } from "./websocket/server";
+import WebSocketServer from "./websocket/server";
 import { TelemetryLogger } from "./utils/logger";
 
 class CarDashTelemetrySystem {
@@ -21,7 +21,7 @@ class CarDashTelemetrySystem {
   constructor() {
     this.udpListener = new UdpListener(5300);
     this.telemetryProcessor = new TelemetryProcessor();
-    this.webSocketServer = new WebSocketServer(3000);
+    this.webSocketServer = new WebSocketServer(3001);
     this.telemetryLogger = new TelemetryLogger();
 
     this.setupEventHandlers();
@@ -76,11 +76,12 @@ class CarDashTelemetrySystem {
       }
 
       // Log telemetry snapshot (mandatory every 500ms)
-      this.telemetryLogger.logTelemetry(parsedData.parsed);
+      // this.telemetryLogger.logTelemetry(parsedData.parsed);
 
       // Process/transform the data
       const processedData = this.telemetryProcessor.process(parsedData);
-      console.dir(processedData, { depth: null });
+      // console.dir(processedData.efficiency, { depth: null });
+      console.log(processedData.parsed.input.gear, "gear");
       // Broadcast to WebSocket clients
       this.webSocketServer.broadcastTelemetry(processedData);
     } catch (error) {
@@ -111,7 +112,7 @@ class CarDashTelemetrySystem {
 
       console.log("✅ Telemetry system started successfully");
       console.log("📡 UDP listener on port 5300");
-      console.log("🌐 WebSocket server on port 3000");
+      console.log("🌐 WebSocket server on port 3001");
       console.log("⏳ Waiting for Car Dash 331-byte telemetry data...");
       console.log("");
       console.log("🔧 System Features:");

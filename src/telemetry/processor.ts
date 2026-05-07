@@ -9,6 +9,7 @@ import {
 import { PhysicsValidator } from "./physics-validator";
 import { GearEfficiencyMapGenerator } from "../services/gear-efficiency-map-generator";
 import { ShiftEngine } from "../services/shift-engine";
+import { carConfig } from "../config/car";
 
 export class TelemetryProcessor {
   private physicsValidator: PhysicsValidator;
@@ -75,8 +76,12 @@ export class TelemetryProcessor {
       efficiency: {
         map: efficiencyResult.efficiencyMap,
         recommendations: {
-          upshiftRecommended: hybridShiftData.recommendation === "upshift",
-          downshiftRecommended: hybridShiftData.recommendation === "downshift",
+          upshiftRecommended:
+            hybridShiftData.recommendation === "upshift" &&
+            transformedData.input.gear < carConfig.gearRatio.length - 1,
+          downshiftRecommended:
+            hybridShiftData.recommendation === "downshift" &&
+            transformedData.input.gear > 1,
         },
         lights: hybridShiftData.lights || [],
         currentRpm: transformedData.engine.rpm,
@@ -197,20 +202,15 @@ export class TelemetryProcessor {
     let transformedData = { ...data };
 
     // Ensure fuel is percentage (0-100)
-    transformedData.performance.fuel = data.performance.fuel * 100;
+    transformedData.performance.fuel = Number(data.performance.fuel.toFixed(1));
 
     // Clamp values to realistic ranges
     transformedData.performance.speedKmh = Math.max(
       0,
       Math.min(500, transformedData.performance.speedKmh),
     );
-    transformedData.performance.powerKw = Math.max(
-      0,
-      Math.min(1500, transformedData.performance.powerKw),
-    );
-    transformedData.performance.fuel = Math.max(
-      0,
-      Math.min(100, transformedData.performance.fuel),
+    transformedData.performance.powerKw = Number(
+      transformedData.performance.powerKw.toFixed(1),
     );
 
     return transformedData;

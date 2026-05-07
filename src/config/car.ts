@@ -6,8 +6,8 @@ export interface CarConfig {
 }
 
 export const carConfig: CarConfig = {
-  shiftSpeed: [75, 109, 146, 287, 231, 278],
-  gearRatio: [2.89, 1.99, 1.49, 1.16, 0.94, 0.78, 3.7],
-  finalDrive: 3.7,
+  shiftSpeed: [120, 184, 230, 288, 392],
+  gearRatio: [2.0, 1.3, 1.04, 0.83, 0.61, 4.62],
+  finalDrive: 4.62,
   idleRPM: 800,
 };

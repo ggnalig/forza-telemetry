@@ -1,157 +1,87 @@
-// WebSocket Server for Car Dash 331-byte telemetry streaming
-// Real-time client communication with Socket.IO
-
-import { Server, Socket } from "socket.io";
-import { createServer } from "http";
+import { WebSocketServer as WSWebSocketServer } from "ws";
 import { ProcessedTelemetryData } from "../types/telemetry";
 
-export class WebSocketServer {
-  private io: Server;
-  private connectedClients: number = 0;
-  private currentTelemetry: ProcessedTelemetryData | null = null;
-  private broadcastInterval: NodeJS.Timeout | null = null;
+export class TelemetryWebSocketServer {
+  private wss: WSWebSocketServer;
+  private clients: Set<any> = new Set();
+  private port: number;
+  private telemetryBuffer: ProcessedTelemetryData | null = null;
+  private broadcastCount: number = 0;
 
-  constructor(port: number = 3000) {
-    const httpServer = createServer();
-    this.io = new Server(httpServer, {
-      cors: { origin: "*" }, // Allow all origins for development
-    });
+  constructor(port: number = 3001) {
+    this.port = port;
+    this.wss = new WSWebSocketServer({ port: this.port });
 
+    console.log(`✅ WebSocket listening on port ${this.port}`);
     this.setupEventHandlers();
-    this.startServer(port);
   }
 
   private setupEventHandlers(): void {
-    this.io.on("connection", (socket: Socket) => {
-      this.connectedClients++;
-      console.log(`🔌 WebSocket client connected: ${socket.id} (Total: ${this.connectedClients})`);
+    this.wss.on("connection", (ws) => {
+      this.clients.add(ws);
 
-      // Send current telemetry to new client
-      if (this.currentTelemetry) {
-        socket.emit("telemetry", this.currentTelemetry);
+      ws.on("close", () => {
+        this.clients.delete(ws);
+      });
+
+      ws.on("error", (error) => {
+        console.error("WebSocket error:", error);
+        this.clients.delete(ws);
+      });
+
+      if (this.telemetryBuffer) {
+        ws.send(
+          JSON.stringify(this.createOptimizedPayload(this.telemetryBuffer)),
+        );
       }
-
-      // Handle debug mode requests
-      socket.on("debug", (enabled: boolean) => {
-        console.log(`Debug mode ${enabled ? 'enabled' : 'disabled'} for client ${socket.id}`);
-      });
-
-      // Handle client disconnection
-      socket.on("disconnect", () => {
-        this.connectedClients--;
-        console.log(`🔌 WebSocket client disconnected: ${socket.id} (Total: ${this.connectedClients})`);
-      });
-
-      // Handle specific telemetry requests
-      socket.on("get_telemetry", () => {
-        if (this.currentTelemetry) {
-          socket.emit("telemetry", this.currentTelemetry);
-        }
-      });
-
-      // Handle subscription to specific data streams
-      socket.on("subscribe", (dataTypes: string[]) => {
-        console.log(`Client ${socket.id} subscribed to:`, dataTypes);
-        // Future enhancement: filter data based on subscription
-      });
-    });
-
-    // Handle server-level events
-    this.io.on("error", (error: Error) => {
-      console.error("❌ WebSocket server error:", error);
     });
   }
 
-  private startServer(port: number): void {
-    this.io.listen(port);
-    console.log(`🌐 WebSocket server started on port ${port}`);
+  private createOptimizedPayload(data: ProcessedTelemetryData): any {
+    return {
+      parsed: data.parsed,
+      timestamp: data.timestamp,
+      efficiency: data.efficiency,
+      broadcastId: this.broadcastCount++,
+    };
   }
 
-  /**
-   * Broadcast telemetry data to all connected clients
-   */
   public broadcastTelemetry(data: ProcessedTelemetryData): void {
-    this.currentTelemetry = data;
-    this.io.emit("telemetry", data);
-    
-    // Log broadcast statistics if in debug mode
-    if (this.connectedClients > 0) {
-      const telemetry = data.parsed;
-      console.log(`📡 Broadcasted telemetry to ${this.connectedClients} clients: ${Math.round(telemetry.performance.speedKmh)}km/h | ${Math.round(telemetry.engine.rpm)}RPM | G${telemetry.input.gear}`);
-    }
-  }
+    this.telemetryBuffer = data;
 
-  /**
-   * Get current telemetry data
-   */
-  public getCurrentTelemetry(): ProcessedTelemetryData | null {
-    return this.currentTelemetry;
-  }
+    if (this.clients.size === 0) return;
 
-  /**
-   * Get connected clients count
-   */
-  public getConnectedClientsCount(): number {
-    return this.connectedClients;
-  }
+    const payload = JSON.stringify(this.createOptimizedPayload(data));
 
-  /**
-   * Get Socket.IO server instance
-   */
-  public getServer(): Server {
-    return this.io;
-  }
-
-  /**
-   * Set up periodic broadcasting (for future enhancement)
-   */
-  public startPeriodicBroadcast(intervalMs: number = 100): void {
-    if (this.broadcastInterval) {
-      clearInterval(this.broadcastInterval);
-    }
-
-    this.broadcastInterval = setInterval(() => {
-      if (this.currentTelemetry) {
-        this.broadcastTelemetry(this.currentTelemetry);
+    this.clients.forEach((client) => {
+      if (client.readyState === 1) {
+        client.send(payload);
       }
-    }, intervalMs);
+    });
   }
 
-  /**
-   * Stop periodic broadcasting
-   */
-  public stopPeriodicBroadcast(): void {
-    if (this.broadcastInterval) {
-      clearInterval(this.broadcastInterval);
-      this.broadcastInterval = null;
-    }
+  public getConnectedClientsCount(): number {
+    return this.clients.size;
   }
 
-  /**
-   * Stop the WebSocket server
-   */
+  public getStats(): { clients: number; broadcasts: number } {
+    return {
+      clients: this.clients.size,
+      broadcasts: this.broadcastCount,
+    };
+  }
+
+  public getServer(): WSWebSocketServer {
+    return this.wss;
+  }
+
   public async stop(): Promise<void> {
     return new Promise((resolve) => {
-      this.stopPeriodicBroadcast();
-      this.io.close(() => {
-        console.log("🛑 WebSocket server stopped");
+      this.wss.close(() => {
         resolve();
       });
     });
   }
-
-  /**
-   * Get server statistics
-   */
-  public getStats(): {
-    connectedClients: number;
-    hasCurrentTelemetry: boolean;
-    isPeriodicBroadcasting: boolean;
-  } {
-    return {
-      connectedClients: this.connectedClients,
-      hasCurrentTelemetry: this.currentTelemetry !== null,
-      isPeriodicBroadcasting: this.broadcastInterval !== null,
-    };
-  }
 }
+
+export default TelemetryWebSocketServer;

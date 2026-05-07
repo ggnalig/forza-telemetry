@@ -24,7 +24,7 @@ export class ShiftEngine {
   private shiftLightBuffer: string[] = [];
   private blinkState: boolean = false;
   private blinkCounter: number = 0;
-  private readonly MAX_BUFFER_SIZE = 6;
+  private readonly MAX_BUFFER_SIZE = 10;
   private readonly MAX_HISTORY = 50;
   private readonly OUTCOME_FRAMES = 5;
   private readonly WINDOW_MARGIN = 0.08;
@@ -79,7 +79,7 @@ export class ShiftEngine {
     const recommendation = this.calculateRecommendation(
       rpm,
       finalShiftRPM,
-      rpmOptimal,
+      // rpmOptimal,
     );
 
     const lights = this.calculateThrottleAwareShiftLights(
@@ -227,12 +227,12 @@ export class ShiftEngine {
   private calculateRecommendation(
     rpm: number,
     finalShiftRPM: number,
-    rpmOptimal: number,
+    // rpmOptimal: number,
   ): "upshift" | "downshift" | "hold" {
     if (rpm >= finalShiftRPM * 0.98) {
       return "upshift";
     }
-    if (rpm <= rpmOptimal * 0.7) {
+    if (rpm <= finalShiftRPM * 0.8) {
       return "downshift";
     }
     return "hold";

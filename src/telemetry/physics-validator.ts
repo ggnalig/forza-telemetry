@@ -49,7 +49,7 @@ export class PhysicsValidator {
     // CRITICAL: Raw power from telemetry is in WATTS, not kW
     const rawTorque = data.performance.torqueNm;
     const rawPowerWatts = data.performance.powerKw; // This is actually in WATTS
-    const rawPowerKw = rawPowerWatts / 1000; // Convert W to kW
+    const rawPowerKw = rawPowerWatts; // Convert W to kW
 
     const rpm = data.engine.rpm;
     const idleRpm = data.engine.idleRpm;
@@ -109,7 +109,7 @@ export class PhysicsValidator {
       if (validatedTorque > 0 && rpm > idleRpm) {
         validatedPowerKw =
           validatedPowerKw ||
-          this.calculatePowerFromTorque(validatedTorque, rpm) / 1000;
+          this.calculatePowerFromTorque(validatedTorque, rpm);
       } else {
         validatedPowerKw = 0;
       }
