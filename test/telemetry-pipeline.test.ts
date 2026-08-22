@@ -1,5 +1,5 @@
 // Single integration test covering the whole telemetry pipeline end to end:
-// raw 331-byte UDP buffer -> CarDash331Parser -> TelemetryProcessor -> shift
+// raw 324-byte UDP buffer -> Fh6TelemetryParser -> TelemetryProcessor -> shift
 // recommendations, plus the per-car persistence layer.
 //
 // This intentionally replaces the pile of ad-hoc test-*.js scripts that used
@@ -12,11 +12,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { carDash331Parser } from "../src/udp/parser";
+import { fh6TelemetryParser } from "../src/udp/parser";
 import { TelemetryProcessor } from "../src/telemetry/processor";
 import { CarProfileStore } from "../src/services/car-profile-store";
 
-const CAR_DASH_SIZE = 331;
+const FH6_DASH_SIZE = 324;
 
 // TelemetryProcessor persists learned state to disk on a car change - point
 // every processor created in this file at a throwaway directory so tests
@@ -42,33 +42,34 @@ const OFFSETS = {
   carPerformanceIndex: 220,
   drivetrainType: 224,
   numCylinders: 228,
-  positionX: 232,
-  speed: 244,
-  power: 248,
-  torque: 252,
-  tireTempFL: 256,
-  tireTempFR: 260,
-  tireTempRL: 264,
-  tireTempRR: 268,
-  boost: 272,
-  fuel: 276,
-  distanceTraveled: 280,
-  bestLap: 284,
-  lastLap: 288,
-  currentLap: 292,
-  currentRaceTime: 296,
-  lapNumber: 300,
-  racePosition: 302,
-  accel: 303,
-  brake: 304,
-  clutch: 305,
-  handbrake: 306,
-  gear: 307,
-  steer: 308,
-  normalizedDrivingLine: 309,
-  normalizedAIBrakeDifference: 310,
-  tireWearFL: 311,
-  trackOrdinal: 327,
+  carGroup: 232,
+  smashableVelDiff: 236,
+  smashableMass: 240,
+  positionX: 244,
+  speed: 256,
+  power: 260,
+  torque: 264,
+  tireTempFL: 268,
+  tireTempFR: 272,
+  tireTempRL: 276,
+  tireTempRR: 280,
+  boost: 284,
+  fuel: 288,
+  distanceTraveled: 292,
+  bestLap: 296,
+  lastLap: 300,
+  currentLap: 304,
+  currentRaceTime: 308,
+  lapNumber: 312,
+  racePosition: 314,
+  accel: 315,
+  brake: 316,
+  clutch: 317,
+  handbrake: 318,
+  gear: 319,
+  steer: 320,
+  normalizedDrivingLine: 321,
+  normalizedAIBrakeDifference: 322,
 } as const;
 
 interface PacketFields {
@@ -88,9 +89,9 @@ interface PacketFields {
   gear?: number;
 }
 
-/** Builds a syntactically valid 331-byte Car Dash packet for the parser. */
+/** Builds a syntactically valid 324-byte FH6 Data Out packet for the parser. */
 function buildPacket(fields: PacketFields = {}): Buffer {
-  const buf = Buffer.alloc(CAR_DASH_SIZE);
+  const buf = Buffer.alloc(FH6_DASH_SIZE);
 
   buf.writeInt32LE(fields.isRaceOn ?? 1, OFFSETS.isRaceOn);
   buf.writeUInt32LE(Date.now() >>> 0, OFFSETS.timestampMS);
@@ -131,22 +132,20 @@ function buildPacket(fields: PacketFields = {}): Buffer {
   buf.writeInt8(0, OFFSETS.normalizedDrivingLine);
   buf.writeInt8(0, OFFSETS.normalizedAIBrakeDifference);
 
-  buf.writeInt32LE(1, OFFSETS.trackOrdinal);
-
   return buf;
 }
 
-test("parser rejects packets that aren't exactly 331 bytes", () => {
+test("parser rejects packets that aren't exactly 324 bytes", () => {
   const tooShort = Buffer.alloc(200);
-  assert.equal(carDash331Parser.parse(tooShort), null);
+  assert.equal(fh6TelemetryParser.parse(tooShort), null);
 });
 
 test("parser rejects packets where isRaceOn is 0", () => {
   const notRacing = buildPacket({ isRaceOn: 0 });
-  assert.equal(carDash331Parser.parse(notRacing), null);
+  assert.equal(fh6TelemetryParser.parse(notRacing), null);
 });
 
-test("parser decodes a valid 331-byte packet correctly", () => {
+test("parser decodes a valid 324-byte packet correctly", () => {
   const packet = buildPacket({
     rpm: 5500,
     maxRpm: 9000,
@@ -159,7 +158,7 @@ test("parser decodes a valid 331-byte packet correctly", () => {
     lapNumber: 2,
   });
 
-  const result = carDash331Parser.parse(packet);
+  const result = fh6TelemetryParser.parse(packet);
   assert.ok(result, "expected a valid packet to parse successfully");
 
   const { parsed } = result!;
@@ -201,7 +200,7 @@ function driveGearAtWOT(
       gear,
       throttle: 1,
     });
-    const parsed = carDash331Parser.parse(packet);
+    const parsed = fh6TelemetryParser.parse(packet);
     assert.ok(parsed, "expected packet to parse during test drive");
     result = processor.process(parsed!);
   }
@@ -228,7 +227,7 @@ test("full pipeline: gear 5 can recommend upshift to gear 6 (regression for the 
     gear: 5,
     throttle: 1,
   });
-  const parsed = carDash331Parser.parse(nearRedline);
+  const parsed = fh6TelemetryParser.parse(nearRedline);
   const result = processor.process(parsed!);
 
   assert.equal(
@@ -257,7 +256,7 @@ test("switching car.ordinal resets learned state to a fresh bootstrap baseline",
     gear: 5,
     throttle: 1,
   });
-  const parsed = carDash331Parser.parse(newCarPacket);
+  const parsed = fh6TelemetryParser.parse(newCarPacket);
   const result = processor.process(parsed!);
 
   const expectedBootstrap = 9000 * 0.92;
@@ -302,7 +301,7 @@ test("two different builds sharing the same car.ordinal (e.g. an engine swap) do
     gear: 5,
     throttle: 1,
   });
-  const buildBParsed = carDash331Parser.parse(buildBPacket);
+  const buildBParsed = fh6TelemetryParser.parse(buildBPacket);
   const buildBResult = processor.process(buildBParsed!);
   const buildBExpectedBootstrap = 9000 * 0.92;
   assert.ok(
@@ -358,7 +357,7 @@ test("a saved profile matching the composite build key but with a different obse
     gear: 3,
     throttle: 1,
   });
-  processor.process(carDash331Parser.parse(otherCarPacket)!);
+  processor.process(fh6TelemetryParser.parse(otherCarPacket)!);
 
   const warnings: string[] = [];
   const originalWarn = console.warn;
@@ -448,7 +447,7 @@ test("gearing safety clamp keeps rpm after shift above idle floor on a wide-rati
     gear: 1,
     throttle: 1,
   });
-  const parsed = carDash331Parser.parse(packet);
+  const parsed = fh6TelemetryParser.parse(packet);
   const result = processor.process(parsed!);
 
   const shiftRpm = result.efficiency?.finalShiftRPM ?? 0;
@@ -481,7 +480,7 @@ test("downshift recommendation is suppressed if it would over-rev the lower gear
     gear: 2,
     throttle: 1,
   });
-  const parsed = carDash331Parser.parse(packet);
+  const parsed = fh6TelemetryParser.parse(packet);
   const result = processor.process(parsed!);
 
   const rpmAfterDownshift = 3600 * (45 / 20);
@@ -540,7 +539,7 @@ function feedFrame(
     throttle,
     brake,
   });
-  const parsed = carDash331Parser.parse(packet);
+  const parsed = fh6TelemetryParser.parse(packet);
   assert.ok(parsed, "expected packet to parse during test drive");
   return processor.process(parsed!);
 }

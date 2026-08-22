@@ -1,5 +1,5 @@
-// Car Dash 331-byte telemetry data types - Official Forza Motorsport format
-// All offsets and field types match official specification
+// Data Out 324-byte telemetry data types - Official Forza Horizon 6 format
+// All offsets and field types match support.forza.net's FH6 Data Out spec
 // FULL implementation with extended data as per specification
 
 export interface TelemetryData {
@@ -83,7 +83,9 @@ export interface TelemetryData {
       rearLeft: number;
       rearRight: number;
     };
-    inPuddleDepth: {
+    // Boolean flag (1/0) in FH6 - NOT a depth value (FM's equivalent field is
+    // a float depth; FH6's Data Out doc explicitly types this s32/boolean).
+    inPuddle: {
       frontLeft: number;
       frontRight: number;
       rearLeft: number;
@@ -101,12 +103,6 @@ export interface TelemetryData {
       rearLeft: number;
       rearRight: number;
     };
-    tireWear: {
-      frontLeft: number;
-      frontRight: number;
-      rearLeft: number;
-      rearRight: number;
-    };
   };
 
   // Car data
@@ -115,6 +111,13 @@ export interface TelemetryData {
     class: number;
     performanceIndex: number;
     drivetrain: number;
+    group: number; // FH6-only: car group identifier
+  };
+
+  // FH6-only: collision data absent from FM's Dash format
+  collision: {
+    smashableVelDiff: number; // velocity loss from smashable object collision (m/s)
+    smashableMass: number; // mass of recently hit smashable object (kg)
   };
 
   // Position data
@@ -153,11 +156,8 @@ export interface TelemetryData {
     steer: number;
   };
 
-  // Track data
-  track: {
-    ordinal: number;
-    distanceTraveled: number;
-  };
+  // FH6 doesn't include a TrackOrdinal field (present in FM's Dash format)
+  distanceTraveled: number;
 
   // AI assistance data
   ai: {

@@ -1,4 +1,4 @@
-// UDP Listener for Forza Motorsport Car Dash 331-byte format
+// UDP Listener for Forza Horizon 6 Data Out 324-byte format
 // Strict packet size validation and event-driven architecture
 
 import dgram from "dgram";
@@ -9,7 +9,12 @@ export class UdpListener extends EventEmitter {
   private port: number;
   private isRunning: boolean = false;
 
-  constructor(port: number = 5300) {
+  // FH6's own Data Out doc warns against using 5200-5300 as the Data Out IP
+  // Port: "the game binds its own outgoing socket to a port in this range."
+  // Picking a port inside that band (the old default was 5300) means the
+  // game's own socket can collide with it, and telemetry silently never
+  // arrives - so the default here must stay outside 5200-5300.
+  constructor(port: number = 7300) {
     super();
     this.port = port;
     this.server = dgram.createSocket("udp4");
@@ -19,8 +24,8 @@ export class UdpListener extends EventEmitter {
   private setupEventHandlers(): void {
     // Handle incoming UDP packets
     this.server.on("message", (msg: Buffer) => {
-      // STRICT: Only accept 331-byte packets
-      if (msg.length !== 331) {
+      // STRICT: Only accept 324-byte packets
+      if (msg.length !== 324) {
         this.emit("invalid_packet", msg.length);
         return;
       }
@@ -44,7 +49,7 @@ export class UdpListener extends EventEmitter {
       console.log(
         `📡 UDP Listener started on ${address.address}:${address.port}`,
       );
-      console.log(`🎯 STRICT 331-byte Car Dash format active`);
+      console.log(`🎯 STRICT 324-byte FH6 Data Out format active`);
       this.isRunning = true;
       this.emit("listening", address);
     });

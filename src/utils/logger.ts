@@ -1,4 +1,4 @@
-// Debug logger for Car Dash 331-byte telemetry system
+// Debug logger for FH6 Data Out 324-byte telemetry system
 // Rate-limited logging with comprehensive telemetry snapshots
 
 import { TelemetryData } from "../types/telemetry";

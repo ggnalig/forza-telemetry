@@ -1,4 +1,4 @@
-// Telemetry Processor for Car Dash 331-byte format
+// Telemetry Processor for FH6 Data Out 324-byte format
 // Data transformation and validation layer for structured telemetry
 
 import {
@@ -320,34 +320,6 @@ export class TelemetryProcessor {
       validatedData.wheels.tireTemp.rearRight = Math.min(
         150,
         data.wheels.tireTemp.rearRight,
-      );
-    }
-
-    // Validate tire wear consistency
-    const avgTireWear =
-      (data.wheels.tireWear.frontLeft +
-        data.wheels.tireWear.frontRight +
-        data.wheels.tireWear.rearLeft +
-        data.wheels.tireWear.rearRight) /
-      4;
-
-    if (avgTireWear > 0.9) {
-      // Unrealistic tire wear
-      validatedData.wheels.tireWear.frontLeft = Math.min(
-        0.9,
-        data.wheels.tireWear.frontLeft,
-      );
-      validatedData.wheels.tireWear.frontRight = Math.min(
-        0.9,
-        data.wheels.tireWear.frontRight,
-      );
-      validatedData.wheels.tireWear.rearLeft = Math.min(
-        0.9,
-        data.wheels.tireWear.rearLeft,
-      );
-      validatedData.wheels.tireWear.rearRight = Math.min(
-        0.9,
-        data.wheels.tireWear.rearRight,
       );
     }
 

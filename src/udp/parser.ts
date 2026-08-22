@@ -1,12 +1,17 @@
-// Strict 331-byte Car Dash Parser - Official Forza Motorsport format
-// EXACT binary offset mapping for FULL 331-byte format with extended data
+// Strict 324-byte Data Out parser - Official Forza Horizon 6 format
+// EXACT binary offset mapping per support.forza.net's FH6 "Data Out" doc
 // NO FALLBACKS - Use ONLY direct fields as specified
 
 import { TelemetryData, ParsedTelemetryData } from "../types/telemetry";
 
-// EXACT official offsets for FULL Car Dash 331-byte format
-const CAR_DASH_OFFSETS = {
-  // HEADER + PHYSICS (0 - 232)
+// EXACT offsets per the official FH6 Data Out documentation
+// (support.forza.net/hc/en-us/articles/51744149102611). FH6 shares most of
+// its layout with Forza Motorsport's "Dash" format up through numCylinders,
+// but then diverges: it inserts carGroup/smashableVelDiff/smashableMass
+// (absent from FM) before position, and drops FM's tireWear/trackOrdinal
+// tail fields entirely - so this is NOT the same 331-byte struct.
+const FH6_DASH_OFFSETS = {
+  // HEADER + PHYSICS (0 - 231) - identical layout to FM's Dash format
   isRaceOn: 0, // s32: race state
   timestampMS: 4, // u32: timestamp in milliseconds
   engineMaxRpm: 8, // f32: engine max RPM
@@ -27,138 +32,137 @@ const CAR_DASH_OFFSETS = {
   pitch: 60, // f32: pitch angle
   roll: 64, // f32: roll angle
 
-  // Suspension travel
-  suspensionTravelFL: 68, // f32: front left suspension travel
-  suspensionTravelFR: 72, // f32: front right suspension travel
-  suspensionTravelRL: 76, // f32: rear left suspension travel
-  suspensionTravelRR: 80, // f32: rear right suspension travel
+  // Suspension travel (normalized)
+  suspensionTravelFL: 68,
+  suspensionTravelFR: 72,
+  suspensionTravelRL: 76,
+  suspensionTravelRR: 80,
 
   // Tire slip ratios
-  tireSlipRatioFL: 84, // f32: front left tire slip ratio
-  tireSlipRatioFR: 88, // f32: front right tire slip ratio
-  tireSlipRatioRL: 92, // f32: rear left tire slip ratio
-  tireSlipRatioRR: 96, // f32: rear right tire slip ratio
+  tireSlipRatioFL: 84,
+  tireSlipRatioFR: 88,
+  tireSlipRatioRL: 92,
+  tireSlipRatioRR: 96,
 
   // Wheel rotation speeds
-  wheelRotationSpeedFL: 100, // f32: front left wheel rotation speed
-  wheelRotationSpeedFR: 104, // f32: front right wheel rotation speed
-  wheelRotationSpeedRL: 108, // f32: rear left wheel rotation speed
-  wheelRotationSpeedRR: 112, // f32: rear right wheel rotation speed
+  wheelRotationSpeedFL: 100,
+  wheelRotationSpeedFR: 104,
+  wheelRotationSpeedRL: 108,
+  wheelRotationSpeedRR: 112,
 
-  // Wheel on rumble strip
-  wheelOnRumbleStripFL: 116, // s32: front left on rumble strip
-  wheelOnRumbleStripFR: 120, // s32: front right on rumble strip
-  wheelOnRumbleStripRL: 124, // s32: rear left on rumble strip
-  wheelOnRumbleStripRR: 128, // s32: rear right on rumble strip
+  // Wheel on rumble strip (s32 boolean)
+  wheelOnRumbleStripFL: 116,
+  wheelOnRumbleStripFR: 120,
+  wheelOnRumbleStripRL: 124,
+  wheelOnRumbleStripRR: 128,
 
-  // Wheel in puddle depth
-  wheelInPuddleDepthFL: 132, // f32: front left puddle depth
-  wheelInPuddleDepthFR: 136, // f32: front right puddle depth
-  wheelInPuddleDepthRL: 140, // f32: rear left puddle depth
-  wheelInPuddleDepthRR: 144, // f32: rear right puddle depth
+  // Wheel in puddle - s32 BOOLEAN in FH6 (1 = in puddle, 0 = not), NOT a
+  // depth float like FM's equivalent field.
+  wheelInPuddleFL: 132,
+  wheelInPuddleFR: 136,
+  wheelInPuddleRL: 140,
+  wheelInPuddleRR: 144,
 
   // Surface rumble
-  surfaceRumbleFL: 148, // f32: front left surface rumble
-  surfaceRumbleFR: 152, // f32: front right surface rumble
-  surfaceRumbleRL: 156, // f32: rear left surface rumble
-  surfaceRumbleRR: 160, // f32: rear right surface rumble
+  surfaceRumbleFL: 148,
+  surfaceRumbleFR: 152,
+  surfaceRumbleRL: 156,
+  surfaceRumbleRR: 160,
 
   // Tire slip angles
-  tireSlipAngleFL: 164, // f32: front left tire slip angle
-  tireSlipAngleFR: 168, // f32: front right tire slip angle
-  tireSlipAngleRL: 172, // f32: rear left tire slip angle
-  tireSlipAngleRR: 176, // f32: rear right tire slip angle
+  tireSlipAngleFL: 164,
+  tireSlipAngleFR: 168,
+  tireSlipAngleRL: 172,
+  tireSlipAngleRR: 176,
 
   // Tire combined slip
-  tireCombinedSlipFL: 180, // f32: front left combined slip
-  tireCombinedSlipFR: 184, // f32: front right combined slip
-  tireCombinedSlipRL: 188, // f32: rear left combined slip
-  tireCombinedSlipRR: 192, // f32: rear right combined slip
+  tireCombinedSlipFL: 180,
+  tireCombinedSlipFR: 184,
+  tireCombinedSlipRL: 188,
+  tireCombinedSlipRR: 192,
 
-  // Suspension travel meters
-  suspensionTravelMetersFL: 196, // f32: front left suspension travel (meters)
-  suspensionTravelMetersFR: 200, // f32: front right suspension travel (meters)
-  suspensionTravelMetersRL: 204, // f32: rear left suspension travel (meters)
-  suspensionTravelMetersRR: 208, // f32: rear right suspension travel (meters)
+  // Suspension travel (meters)
+  suspensionTravelMetersFL: 196,
+  suspensionTravelMetersFR: 200,
+  suspensionTravelMetersRL: 204,
+  suspensionTravelMetersRR: 208,
 
   // Car data
-  carOrdinal: 212, // s32: car ordinal
-  carClass: 216, // s32: car class
-  carPerformanceIndex: 220, // s32: car performance index
-  drivetrainType: 224, // s32: drivetrain type
-  numCylinders: 228, // s32: number of cylinders
+  carOrdinal: 212, // s32
+  carClass: 216, // s32
+  carPerformanceIndex: 220, // s32
+  drivetrainType: 224, // s32
+  numCylinders: 228, // s32
 
-  // DASH EXTENSION (232 - 331)
-  positionX: 232, // f32: X position in world
-  positionY: 236, // f32: Y position in world
-  positionZ: 240, // f32: Z position in world
-  speed: 244, // f32: speed (m/s) - convert to km/h
-  power: 248, // f32: power (kW)
-  torque: 252, // f32: torque (Nm)
-  tireTempFL: 256, // f32: front left tire temperature
-  tireTempFR: 260, // f32: front right tire temperature
-  tireTempRL: 264, // f32: rear left tire temperature
-  tireTempRR: 268, // f32: rear right tire temperature
-  boost: 272, // f32: boost pressure
-  fuel: 276, // f32: fuel level
-  distanceTraveled: 280, // f32: distance traveled
-  bestLap: 284, // f32: best lap time
-  lastLap: 288, // f32: last lap time
-  currentLap: 292, // f32: current lap time
-  currentRaceTime: 296, // f32: current race time
-  lapNumber: 300, // u16: current lap number
-  racePosition: 302, // u8: current race position
-  accel: 303, // u8: accelerator position
-  brake: 304, // u8: brake position
-  clutch: 305, // u8: clutch position
-  handbrake: 306, // u8: handbrake position
-  gear: 307, // u8: current gear
-  steer: 308, // s8: steering input
-  normalizedDrivingLine: 309, // s8: normalized driving line
-  normalizedAIBrakeDifference: 310, // s8: normalized AI brake difference
-  tireWearFL: 311, // f32: front left tire wear
-  tireWearFR: 315, // f32: front right tire wear
-  tireWearRL: 319, // f32: rear left tire wear
-  tireWearRR: 323, // f32: rear right tire wear
-  trackOrdinal: 327, // s32: track ordinal
+  // FH6-ONLY fields (not present in FM's Dash format)
+  carGroup: 232, // u32: car group identifier
+  smashableVelDiff: 236, // f32: velocity loss from smashable collision (m/s)
+  smashableMass: 240, // f32: mass of recently hit smashable object (kg)
+
+  // Position/performance (shifted +12 vs FM to make room for the 3 fields above)
+  positionX: 244,
+  positionY: 248,
+  positionZ: 252,
+  speed: 256, // f32: m/s - convert to km/h
+  power: 260, // f32: watts - convert to kW
+  torque: 264, // f32: Nm
+  tireTempFL: 268,
+  tireTempFR: 272,
+  tireTempRL: 276,
+  tireTempRR: 280,
+  boost: 284, // f32: PSI above atmospheric
+  fuel: 288, // f32: 0.0-1.0
+  distanceTraveled: 292, // f32: meters
+  bestLap: 296, // f32: seconds
+  lastLap: 300, // f32: seconds
+  currentLap: 304, // f32: seconds
+  currentRaceTime: 308, // f32: seconds
+  lapNumber: 312, // u16
+  racePosition: 314, // u8
+  accel: 315, // u8: 0-255
+  brake: 316, // u8: 0-255
+  clutch: 317, // u8: 0-255
+  handbrake: 318, // u8: 0-255
+  gear: 319, // u8
+  steer: 320, // s8: -127..127
+  normalizedDrivingLine: 321, // s8: -127..127
+  normalizedAIBrakeDifference: 322, // s8: -127..127
+  // Byte 323 is a single trailing pad byte (324 total isn't a multiple of 4
+  // without it - every other field is naturally 4-byte aligned) - unused.
 };
 
 // Constants
-const CAR_DASH_SIZE = 331; // EXACT packet size
+const FH6_DASH_SIZE = 324; // EXACT packet size per the official FH6 doc
 const RPM_MIN = 0; // RPM validation range
 const RPM_MAX = 15000;
 const SPEED_MAX_KMH = 500; // Speed validation range
 
-export class CarDash331Parser {
-  constructor() {
-    // Constructor can be removed if no initialization needed
-  }
-
+export class Fh6TelemetryParser {
   /**
-   * Parse FULL Car Dash 331-byte format with strict validation
-   * NO FALLBACKS - Use ONLY direct fields as specified
+   * Parse a Forza Horizon 6 "Data Out" 324-byte packet with strict validation.
+   * NO FALLBACKS - Use ONLY direct fields as specified.
    */
   public parse(buffer: Buffer): ParsedTelemetryData | null {
-    // STRICT: Only accept 331-byte packets
-    if (buffer.length !== CAR_DASH_SIZE) {
+    // STRICT: Only accept 324-byte packets
+    if (buffer.length !== FH6_DASH_SIZE) {
       return null;
     }
 
     try {
       // Race state check - reject if not racing
-      const isRaceOn = buffer.readInt32LE(CAR_DASH_OFFSETS.isRaceOn);
+      const isRaceOn = buffer.readInt32LE(FH6_DASH_OFFSETS.isRaceOn);
       if (isRaceOn === 0) {
         return null;
       }
 
       // Parse timestamp
-      const timestampMS = buffer.readUInt32LE(CAR_DASH_OFFSETS.timestampMS);
+      const timestampMS = buffer.readUInt32LE(FH6_DASH_OFFSETS.timestampMS);
 
       // Parse engine data
-      const engineMaxRpm = buffer.readFloatLE(CAR_DASH_OFFSETS.engineMaxRpm);
-      const engineIdleRpm = buffer.readFloatLE(CAR_DASH_OFFSETS.engineIdleRpm);
+      const engineMaxRpm = buffer.readFloatLE(FH6_DASH_OFFSETS.engineMaxRpm);
+      const engineIdleRpm = buffer.readFloatLE(FH6_DASH_OFFSETS.engineIdleRpm);
       const currentEngineRpm = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.currentEngineRpm,
+        FH6_DASH_OFFSETS.currentEngineRpm,
       );
 
       // Validate RPM ranges
@@ -171,177 +175,182 @@ export class CarDash331Parser {
       }
 
       // Parse motion data (acceleration)
-      const accelerationX = buffer.readFloatLE(CAR_DASH_OFFSETS.accelerationX);
-      const accelerationY = buffer.readFloatLE(CAR_DASH_OFFSETS.accelerationY);
-      const accelerationZ = buffer.readFloatLE(CAR_DASH_OFFSETS.accelerationZ);
+      const accelerationX = buffer.readFloatLE(FH6_DASH_OFFSETS.accelerationX);
+      const accelerationY = buffer.readFloatLE(FH6_DASH_OFFSETS.accelerationY);
+      const accelerationZ = buffer.readFloatLE(FH6_DASH_OFFSETS.accelerationZ);
 
       // Parse velocity data
-      const velocityX = buffer.readFloatLE(CAR_DASH_OFFSETS.velocityX);
-      const velocityY = buffer.readFloatLE(CAR_DASH_OFFSETS.velocityY);
-      const velocityZ = buffer.readFloatLE(CAR_DASH_OFFSETS.velocityZ);
+      const velocityX = buffer.readFloatLE(FH6_DASH_OFFSETS.velocityX);
+      const velocityY = buffer.readFloatLE(FH6_DASH_OFFSETS.velocityY);
+      const velocityZ = buffer.readFloatLE(FH6_DASH_OFFSETS.velocityZ);
 
       // Parse angular velocity
       const angularVelocityX = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.angularVelocityX,
+        FH6_DASH_OFFSETS.angularVelocityX,
       );
       const angularVelocityY = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.angularVelocityY,
+        FH6_DASH_OFFSETS.angularVelocityY,
       );
       const angularVelocityZ = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.angularVelocityZ,
+        FH6_DASH_OFFSETS.angularVelocityZ,
       );
 
       // Parse orientation
-      const yaw = buffer.readFloatLE(CAR_DASH_OFFSETS.yaw);
-      const pitch = buffer.readFloatLE(CAR_DASH_OFFSETS.pitch);
-      const roll = buffer.readFloatLE(CAR_DASH_OFFSETS.roll);
+      const yaw = buffer.readFloatLE(FH6_DASH_OFFSETS.yaw);
+      const pitch = buffer.readFloatLE(FH6_DASH_OFFSETS.pitch);
+      const roll = buffer.readFloatLE(FH6_DASH_OFFSETS.roll);
 
       // Parse suspension travel
       const suspensionTravelFL = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.suspensionTravelFL,
+        FH6_DASH_OFFSETS.suspensionTravelFL,
       );
       const suspensionTravelFR = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.suspensionTravelFR,
+        FH6_DASH_OFFSETS.suspensionTravelFR,
       );
       const suspensionTravelRL = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.suspensionTravelRL,
+        FH6_DASH_OFFSETS.suspensionTravelRL,
       );
       const suspensionTravelRR = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.suspensionTravelRR,
+        FH6_DASH_OFFSETS.suspensionTravelRR,
       );
 
       // Parse tire slip ratios
       const tireSlipRatioFL = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.tireSlipRatioFL,
+        FH6_DASH_OFFSETS.tireSlipRatioFL,
       );
       const tireSlipRatioFR = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.tireSlipRatioFR,
+        FH6_DASH_OFFSETS.tireSlipRatioFR,
       );
       const tireSlipRatioRL = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.tireSlipRatioRL,
+        FH6_DASH_OFFSETS.tireSlipRatioRL,
       );
       const tireSlipRatioRR = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.tireSlipRatioRR,
+        FH6_DASH_OFFSETS.tireSlipRatioRR,
       );
 
       // Parse wheel rotation speeds
       const wheelRotationSpeedFL = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.wheelRotationSpeedFL,
+        FH6_DASH_OFFSETS.wheelRotationSpeedFL,
       );
       const wheelRotationSpeedFR = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.wheelRotationSpeedFR,
+        FH6_DASH_OFFSETS.wheelRotationSpeedFR,
       );
       const wheelRotationSpeedRL = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.wheelRotationSpeedRL,
+        FH6_DASH_OFFSETS.wheelRotationSpeedRL,
       );
       const wheelRotationSpeedRR = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.wheelRotationSpeedRR,
+        FH6_DASH_OFFSETS.wheelRotationSpeedRR,
       );
 
       // Parse wheel on rumble strip
       const wheelOnRumbleStripFL = buffer.readInt32LE(
-        CAR_DASH_OFFSETS.wheelOnRumbleStripFL,
+        FH6_DASH_OFFSETS.wheelOnRumbleStripFL,
       );
       const wheelOnRumbleStripFR = buffer.readInt32LE(
-        CAR_DASH_OFFSETS.wheelOnRumbleStripFR,
+        FH6_DASH_OFFSETS.wheelOnRumbleStripFR,
       );
       const wheelOnRumbleStripRL = buffer.readInt32LE(
-        CAR_DASH_OFFSETS.wheelOnRumbleStripRL,
+        FH6_DASH_OFFSETS.wheelOnRumbleStripRL,
       );
       const wheelOnRumbleStripRR = buffer.readInt32LE(
-        CAR_DASH_OFFSETS.wheelOnRumbleStripRR,
+        FH6_DASH_OFFSETS.wheelOnRumbleStripRR,
       );
 
-      // Parse wheel in puddle depth
-      const wheelInPuddleDepthFL = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.wheelInPuddleDepthFL,
+      // Parse wheel in puddle (boolean, not depth - see offsets comment)
+      const wheelInPuddleFL = buffer.readInt32LE(
+        FH6_DASH_OFFSETS.wheelInPuddleFL,
       );
-      const wheelInPuddleDepthFR = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.wheelInPuddleDepthFR,
+      const wheelInPuddleFR = buffer.readInt32LE(
+        FH6_DASH_OFFSETS.wheelInPuddleFR,
       );
-      const wheelInPuddleDepthRL = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.wheelInPuddleDepthRL,
+      const wheelInPuddleRL = buffer.readInt32LE(
+        FH6_DASH_OFFSETS.wheelInPuddleRL,
       );
-      const wheelInPuddleDepthRR = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.wheelInPuddleDepthRR,
+      const wheelInPuddleRR = buffer.readInt32LE(
+        FH6_DASH_OFFSETS.wheelInPuddleRR,
       );
 
       // Parse surface rumble
       const surfaceRumbleFL = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.surfaceRumbleFL,
+        FH6_DASH_OFFSETS.surfaceRumbleFL,
       );
       const surfaceRumbleFR = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.surfaceRumbleFR,
+        FH6_DASH_OFFSETS.surfaceRumbleFR,
       );
       const surfaceRumbleRL = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.surfaceRumbleRL,
+        FH6_DASH_OFFSETS.surfaceRumbleRL,
       );
       const surfaceRumbleRR = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.surfaceRumbleRR,
+        FH6_DASH_OFFSETS.surfaceRumbleRR,
       );
 
       // Parse tire slip angles
       const tireSlipAngleFL = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.tireSlipAngleFL,
+        FH6_DASH_OFFSETS.tireSlipAngleFL,
       );
       const tireSlipAngleFR = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.tireSlipAngleFR,
+        FH6_DASH_OFFSETS.tireSlipAngleFR,
       );
       const tireSlipAngleRL = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.tireSlipAngleRL,
+        FH6_DASH_OFFSETS.tireSlipAngleRL,
       );
       const tireSlipAngleRR = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.tireSlipAngleRR,
+        FH6_DASH_OFFSETS.tireSlipAngleRR,
       );
 
       // Parse tire combined slip
       const tireCombinedSlipFL = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.tireCombinedSlipFL,
+        FH6_DASH_OFFSETS.tireCombinedSlipFL,
       );
       const tireCombinedSlipFR = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.tireCombinedSlipFR,
+        FH6_DASH_OFFSETS.tireCombinedSlipFR,
       );
       const tireCombinedSlipRL = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.tireCombinedSlipRL,
+        FH6_DASH_OFFSETS.tireCombinedSlipRL,
       );
       const tireCombinedSlipRR = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.tireCombinedSlipRR,
+        FH6_DASH_OFFSETS.tireCombinedSlipRR,
       );
 
       // Parse suspension travel meters
       const suspensionTravelMetersFL = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.suspensionTravelMetersFL,
+        FH6_DASH_OFFSETS.suspensionTravelMetersFL,
       );
       const suspensionTravelMetersFR = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.suspensionTravelMetersFR,
+        FH6_DASH_OFFSETS.suspensionTravelMetersFR,
       );
       const suspensionTravelMetersRL = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.suspensionTravelMetersRL,
+        FH6_DASH_OFFSETS.suspensionTravelMetersRL,
       );
       const suspensionTravelMetersRR = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.suspensionTravelMetersRR,
+        FH6_DASH_OFFSETS.suspensionTravelMetersRR,
       );
 
       // Parse car data
-      const carOrdinal = buffer.readInt32LE(CAR_DASH_OFFSETS.carOrdinal);
-      const carClass = buffer.readInt32LE(CAR_DASH_OFFSETS.carClass);
+      const carOrdinal = buffer.readInt32LE(FH6_DASH_OFFSETS.carOrdinal);
+      const carClass = buffer.readInt32LE(FH6_DASH_OFFSETS.carClass);
       const carPerformanceIndex = buffer.readInt32LE(
-        CAR_DASH_OFFSETS.carPerformanceIndex,
+        FH6_DASH_OFFSETS.carPerformanceIndex,
       );
       const drivetrainType = buffer.readInt32LE(
-        CAR_DASH_OFFSETS.drivetrainType,
+        FH6_DASH_OFFSETS.drivetrainType,
       );
-      const numCylinders = buffer.readInt32LE(CAR_DASH_OFFSETS.numCylinders);
+      const numCylinders = buffer.readInt32LE(FH6_DASH_OFFSETS.numCylinders);
+      const carGroup = buffer.readUInt32LE(FH6_DASH_OFFSETS.carGroup);
+      const smashableVelDiff = buffer.readFloatLE(
+        FH6_DASH_OFFSETS.smashableVelDiff,
+      );
+      const smashableMass = buffer.readFloatLE(FH6_DASH_OFFSETS.smashableMass);
 
       // Parse position data
-      const positionX = buffer.readFloatLE(CAR_DASH_OFFSETS.positionX);
-      const positionY = buffer.readFloatLE(CAR_DASH_OFFSETS.positionY);
-      const positionZ = buffer.readFloatLE(CAR_DASH_OFFSETS.positionZ);
+      const positionX = buffer.readFloatLE(FH6_DASH_OFFSETS.positionX);
+      const positionY = buffer.readFloatLE(FH6_DASH_OFFSETS.positionY);
+      const positionZ = buffer.readFloatLE(FH6_DASH_OFFSETS.positionZ);
 
       // Parse performance data (NO FALLBACKS - direct fields only)
-      const speed = buffer.readFloatLE(CAR_DASH_OFFSETS.speed);
-      const power = buffer.readFloatLE(CAR_DASH_OFFSETS.power) / 1000;
-      const torque = buffer.readFloatLE(CAR_DASH_OFFSETS.torque);
+      const speed = buffer.readFloatLE(FH6_DASH_OFFSETS.speed);
+      const power = buffer.readFloatLE(FH6_DASH_OFFSETS.power) / 1000;
+      const torque = buffer.readFloatLE(FH6_DASH_OFFSETS.torque);
 
       // Validate speed and convert to km/h
       if (isNaN(speed) || speed < 0) {
@@ -353,66 +362,57 @@ export class CarDash331Parser {
       }
 
       // Parse tire temperatures
-      const tireTempFL = buffer.readFloatLE(CAR_DASH_OFFSETS.tireTempFL);
-      const tireTempFR = buffer.readFloatLE(CAR_DASH_OFFSETS.tireTempFR);
-      const tireTempRL = buffer.readFloatLE(CAR_DASH_OFFSETS.tireTempRL);
-      const tireTempRR = buffer.readFloatLE(CAR_DASH_OFFSETS.tireTempRR);
+      const tireTempFL = buffer.readFloatLE(FH6_DASH_OFFSETS.tireTempFL);
+      const tireTempFR = buffer.readFloatLE(FH6_DASH_OFFSETS.tireTempFR);
+      const tireTempRL = buffer.readFloatLE(FH6_DASH_OFFSETS.tireTempRL);
+      const tireTempRR = buffer.readFloatLE(FH6_DASH_OFFSETS.tireTempRR);
 
       // Parse additional metrics
-      const boost = buffer.readFloatLE(CAR_DASH_OFFSETS.boost);
-      const fuel = buffer.readFloatLE(CAR_DASH_OFFSETS.fuel) * 100;
+      const boost = buffer.readFloatLE(FH6_DASH_OFFSETS.boost);
+      const fuel = buffer.readFloatLE(FH6_DASH_OFFSETS.fuel) * 100;
       const distanceTraveled = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.distanceTraveled,
+        FH6_DASH_OFFSETS.distanceTraveled,
       );
 
       // Parse lap timing data
-      const bestLap = buffer.readFloatLE(CAR_DASH_OFFSETS.bestLap);
-      const lastLap = buffer.readFloatLE(CAR_DASH_OFFSETS.lastLap);
-      const currentLap = buffer.readFloatLE(CAR_DASH_OFFSETS.currentLap);
+      const bestLap = buffer.readFloatLE(FH6_DASH_OFFSETS.bestLap);
+      const lastLap = buffer.readFloatLE(FH6_DASH_OFFSETS.lastLap);
+      const currentLap = buffer.readFloatLE(FH6_DASH_OFFSETS.currentLap);
       const currentRaceTime = buffer.readFloatLE(
-        CAR_DASH_OFFSETS.currentRaceTime,
+        FH6_DASH_OFFSETS.currentRaceTime,
       );
 
       // Parse race data
-      const lapNumber = buffer.readUInt16LE(CAR_DASH_OFFSETS.lapNumber) + 1;
-      const racePosition = buffer.readUInt8(CAR_DASH_OFFSETS.racePosition);
+      const lapNumber = buffer.readUInt16LE(FH6_DASH_OFFSETS.lapNumber) + 1;
+      const racePosition = buffer.readUInt8(FH6_DASH_OFFSETS.racePosition);
 
       // Parse control inputs (normalize u8 values)
       const throttle = Math.max(
         0,
-        Math.min(1, buffer.readUInt8(CAR_DASH_OFFSETS.accel) / 255),
+        Math.min(1, buffer.readUInt8(FH6_DASH_OFFSETS.accel) / 255),
       );
       const brake = Math.max(
         0,
-        Math.min(1, buffer.readUInt8(CAR_DASH_OFFSETS.brake) / 255),
+        Math.min(1, buffer.readUInt8(FH6_DASH_OFFSETS.brake) / 255),
       );
       const clutch = Math.max(
         0,
-        Math.min(1, buffer.readUInt8(CAR_DASH_OFFSETS.clutch) / 255),
+        Math.min(1, buffer.readUInt8(FH6_DASH_OFFSETS.clutch) / 255),
       );
       const handbrake = Math.max(
         0,
-        Math.min(1, buffer.readUInt8(CAR_DASH_OFFSETS.handbrake) / 255),
+        Math.min(1, buffer.readUInt8(FH6_DASH_OFFSETS.handbrake) / 255),
       );
 
       // Parse gear and steering (keep signed values as specified)
-      const gear = buffer.readUInt8(CAR_DASH_OFFSETS.gear);
-      const steer = buffer.readInt8(CAR_DASH_OFFSETS.steer);
+      const gear = buffer.readUInt8(FH6_DASH_OFFSETS.gear);
+      const steer = buffer.readInt8(FH6_DASH_OFFSETS.steer);
 
       // Parse AI assistance data (normalize s8 values)
       const normalizedDrivingLine =
-        buffer.readInt8(CAR_DASH_OFFSETS.normalizedDrivingLine) / 127;
+        buffer.readInt8(FH6_DASH_OFFSETS.normalizedDrivingLine) / 127;
       const normalizedAIBrakeDifference =
-        buffer.readInt8(CAR_DASH_OFFSETS.normalizedAIBrakeDifference) / 127;
-
-      // Parse tire wear data
-      const tireWearFL = buffer.readFloatLE(CAR_DASH_OFFSETS.tireWearFL);
-      const tireWearFR = buffer.readFloatLE(CAR_DASH_OFFSETS.tireWearFR);
-      const tireWearRL = buffer.readFloatLE(CAR_DASH_OFFSETS.tireWearRL);
-      const tireWearRR = buffer.readFloatLE(CAR_DASH_OFFSETS.tireWearRR);
-
-      // Parse track data
-      const trackOrdinal = buffer.readInt32LE(CAR_DASH_OFFSETS.trackOrdinal);
+        buffer.readInt8(FH6_DASH_OFFSETS.normalizedAIBrakeDifference) / 127;
 
       // Create structured telemetry data object as specified
       const telemetry: TelemetryData = {
@@ -492,11 +492,11 @@ export class CarDash331Parser {
             rearLeft: wheelOnRumbleStripRL,
             rearRight: wheelOnRumbleStripRR,
           },
-          inPuddleDepth: {
-            frontLeft: wheelInPuddleDepthFL,
-            frontRight: wheelInPuddleDepthFR,
-            rearLeft: wheelInPuddleDepthRL,
-            rearRight: wheelInPuddleDepthRR,
+          inPuddle: {
+            frontLeft: wheelInPuddleFL,
+            frontRight: wheelInPuddleFR,
+            rearLeft: wheelInPuddleRL,
+            rearRight: wheelInPuddleRR,
           },
           surfaceRumble: {
             frontLeft: surfaceRumbleFL,
@@ -510,12 +510,6 @@ export class CarDash331Parser {
             rearLeft: tireTempRL,
             rearRight: tireTempRR,
           },
-          tireWear: {
-            frontLeft: tireWearFL,
-            frontRight: tireWearFR,
-            rearLeft: tireWearRL,
-            rearRight: tireWearRR,
-          },
         },
 
         car: {
@@ -523,6 +517,12 @@ export class CarDash331Parser {
           class: carClass,
           performanceIndex: carPerformanceIndex,
           drivetrain: drivetrainType,
+          group: carGroup,
+        },
+
+        collision: {
+          smashableVelDiff: smashableVelDiff,
+          smashableMass: smashableMass,
         },
 
         position: {
@@ -557,10 +557,7 @@ export class CarDash331Parser {
           steer: steer,
         },
 
-        track: {
-          ordinal: trackOrdinal,
-          distanceTraveled: distanceTraveled,
-        },
+        distanceTraveled: distanceTraveled,
 
         ai: {
           normalizedDrivingLine: normalizedDrivingLine,
@@ -588,10 +585,10 @@ export class CarDash331Parser {
   /**
    * Get current offsets for debugging
    */
-  public getOffsets(): Readonly<typeof CAR_DASH_OFFSETS> {
-    return { ...CAR_DASH_OFFSETS };
+  public getOffsets(): Readonly<typeof FH6_DASH_OFFSETS> {
+    return { ...FH6_DASH_OFFSETS };
   }
 }
 
 // Export singleton instance
-export const carDash331Parser = new CarDash331Parser();
+export const fh6TelemetryParser = new Fh6TelemetryParser();

@@ -1,7 +1,7 @@
 {
   "name": "forza-telemetry",
   "version": "1.0.0",
-  "description": "Forza Motorsport Car Dash 331-byte telemetry backend with TypeScript",
+  "description": "Forza Horizon 6 Data Out 324-byte telemetry backend with TypeScript",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -18,7 +18,8 @@
     "websocket",
     "racing",
     "car-dash",
-    "331-byte"
+    "324-byte",
+    "forza-horizon-6"
   ],
   "author": "Senior TypeScript Engineer",
   "license": "MIT",

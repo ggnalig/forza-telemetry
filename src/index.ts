@@ -1,11 +1,11 @@
-// Main entry point for FULL Car Dash 331-byte telemetry system
+// Main entry point for FULL Forza Horizon 6 Data Out (324-byte) telemetry system
 // Wires together UDP listener, parser, processor, and WebSocket server
 
 import * as dotenv from "dotenv";
 dotenv.config({ path: ".env.local" });
 
 import { UdpListener } from "./udp/listener";
-import { carDash331Parser } from "./udp/parser";
+import { fh6TelemetryParser } from "./udp/parser";
 import { TelemetryProcessor } from "./telemetry/processor";
 import WebSocketServer from "./websocket/server";
 import { TelemetryLogger } from "./utils/logger";
@@ -19,7 +19,7 @@ class CarDashTelemetrySystem {
   private debugMode: boolean = false;
 
   constructor() {
-    this.udpListener = new UdpListener(5300);
+    this.udpListener = new UdpListener(7300);
     this.telemetryProcessor = new TelemetryProcessor();
     this.webSocketServer = new WebSocketServer(3001);
     this.telemetryLogger = new TelemetryLogger();
@@ -37,7 +37,7 @@ class CarDashTelemetrySystem {
     this.udpListener.on("invalid_packet", (size: number) => {
       if (this.debugMode) {
         this.telemetryLogger.logWarning(
-          `Invalid packet size: ${size} bytes (expected 331)`,
+          `Invalid packet size: ${size} bytes (expected 324)`,
         );
       }
     });
@@ -45,9 +45,9 @@ class CarDashTelemetrySystem {
     // Handle UDP errors
     this.udpListener.on("error", (error: Error) => {
       this.telemetryLogger.logError("UDP Listener error", error.message);
-      if (error.message.includes("Port 5300 is already in use")) {
+      if (error.message.includes("is already in use")) {
         console.error(
-          "❌ Port 5300 is already in use. Please ensure no other application is using this port.",
+          `❌ Port ${this.udpListener.getPort()} is already in use. Please ensure no other application is using this port.`,
         );
         process.exit(1);
       }
@@ -70,8 +70,8 @@ class CarDashTelemetrySystem {
 
   private handleIncomingTelemetry(buffer: Buffer): void {
     try {
-      // Parse the FULL 331-byte Car Dash format
-      const parsedData = carDash331Parser.parse(buffer);
+      // Parse the FULL 324-byte FH6 Data Out format
+      const parsedData = fh6TelemetryParser.parse(buffer);
 
       if (!parsedData) {
         return; // Invalid data, skip processing
@@ -96,10 +96,10 @@ class CarDashTelemetrySystem {
     }
 
     try {
-      console.log("🚀 Starting FULL Car Dash 331-byte telemetry system...");
+      console.log("🚀 Starting FULL FH6 Data Out 324-byte telemetry system...");
       console.log("=".repeat(80));
       console.log(
-        "🎯 FULL 331-BYTE CAR DASH FORMAT ACTIVE - ALL FIELDS IMPLEMENTED",
+        "🎯 FULL 324-BYTE FH6 DATA OUT FORMAT ACTIVE - ALL FIELDS IMPLEMENTED",
       );
       console.log("=".repeat(80));
 
@@ -111,12 +111,12 @@ class CarDashTelemetrySystem {
       this.isRunning = true;
 
       console.log("✅ Telemetry system started successfully");
-      console.log("📡 UDP listener on port 5300");
+      console.log(`📡 UDP listener on port ${this.udpListener.getPort()}`);
       console.log("🌐 WebSocket server on port 3001");
-      console.log("⏳ Waiting for Car Dash 331-byte telemetry data...");
+      console.log("⏳ Waiting for FH6 Data Out 324-byte telemetry data...");
       console.log("");
       console.log("🔧 System Features:");
-      console.log("• EXACT 331-byte packet validation");
+      console.log("• EXACT 324-byte packet validation");
       console.log("• FULL format with ALL extended data fields");
       console.log("• NO FALLBACKS - direct field usage only");
       console.log("• Structured nested object output");
@@ -161,7 +161,7 @@ class CarDashTelemetrySystem {
   public setDebugMode(enabled: boolean): void {
     this.debugMode = enabled;
     this.telemetryLogger.setDebugMode(enabled);
-    carDash331Parser.setDebugMode(enabled);
+    fh6TelemetryParser.setDebugMode(enabled);
     console.log(`Debug mode ${enabled ? "enabled" : "disabled"}`);
   }
 
