@@ -18,6 +18,11 @@ import {
   computeBuildKey,
 } from "../services/car-profile-store";
 import { lookupCarInfo } from "../services/car-database";
+import {
+  GearboxTuneStore,
+  GearboxTune,
+  tuneRatioBetween,
+} from "../services/gearbox-tune-store";
 
 export class TelemetryProcessor {
   private physicsValidator: PhysicsValidator;
@@ -26,8 +31,17 @@ export class TelemetryProcessor {
   private enginePowerCurve: EnginePowerCurve;
   private shiftEngine: ShiftEngine;
   private carProfileStore: CarProfileStore;
+  private gearboxTuneStore: GearboxTuneStore;
   private lastBuildKey: string | null = null;
   private lastCarMeta: CarMeta | null = null;
+  /** Set from handleCarChange whenever a GearboxTune is active for the
+   * current car - null means "use GearRatioEstimator's estimate" (the
+   * default, unmanaged behavior). */
+  private activeTune: GearboxTune | null = null;
+  /** The active tune's own id, used in place of computeBuildKey's output
+   * when saving/loading this build's CarProfileStore data - null falls back
+   * to the auto-computed key. */
+  private activeTuneBuildKey: string | null = null;
   /** A profile loaded from disk that hasn't been verified against fresh
    * telemetry yet - see handleCarChange's doc comment and tryVerifyPendingProfile. */
   private pendingProfile: CarProfile | null = null;
@@ -41,13 +55,18 @@ export class TelemetryProcessor {
   private lastAutosaveAt: number = 0;
   private static readonly AUTOSAVE_INTERVAL_MS = 30_000;
 
-  constructor(debugMode = false, carProfileStore: CarProfileStore = new CarProfileStore()) {
+  constructor(
+    debugMode = false,
+    carProfileStore: CarProfileStore = new CarProfileStore(),
+    gearboxTuneStore: GearboxTuneStore = new GearboxTuneStore(),
+  ) {
     this.physicsValidator = new PhysicsValidator(debugMode);
     this.efficiencyMapGenerator = new GearEfficiencyMapGenerator();
     this.gearRatioEstimator = new GearRatioEstimator();
     this.enginePowerCurve = new EnginePowerCurve();
     this.shiftEngine = new ShiftEngine();
     this.carProfileStore = carProfileStore;
+    this.gearboxTuneStore = gearboxTuneStore;
   }
 
   /**
@@ -64,6 +83,13 @@ export class TelemetryProcessor {
    * tryVerifyPendingProfile for why (the composite key can still match two
    * builds that differ in ways it can't see, e.g. a bolt-on turbo or a manual
    * gear ratio retune with the same engine/redline/drivetrain).
+   *
+   * When a GearboxTune is active for this car (see gearbox-tune-store.ts),
+   * its own `id` is used AS the build key instead of computeBuildKey's
+   * output - this is what gives two different tunes of the "same" car
+   * (identical engine/redline/drivetrain, e.g. a 5-speed vs a 10-speed
+   * build) fully separate learned data, closing a gap the composite key
+   * above can't: it has no gear-count component at all.
    */
   private handleCarChange(telemetry: TelemetryData): void {
     const meta: CarMeta = {
@@ -75,7 +101,9 @@ export class TelemetryProcessor {
       idleRpm: telemetry.engine.idleRpm,
       maxRpm: telemetry.engine.maxRpm,
     };
-    const buildKey = computeBuildKey(meta);
+    const activeTune = this.gearboxTuneStore.getActiveTune(telemetry.car.ordinal);
+    const tuneBuildKey = activeTune?.id ?? null;
+    const buildKey = tuneBuildKey ?? computeBuildKey(meta);
 
     // Deliberately NOT gated on `this.lastBuildKey !== null`: the very first
     // frame of a fresh process run must also try to load a saved profile
@@ -85,7 +113,10 @@ export class TelemetryProcessor {
     // there's nothing yet to save.
     if (this.lastBuildKey !== buildKey) {
       if (this.lastCarMeta) {
-        this.carProfileStore.save(this.exportCarProfile(this.lastCarMeta));
+        this.carProfileStore.save(
+          this.exportCarProfile(this.lastCarMeta),
+          this.activeTuneBuildKey ?? undefined,
+        );
       }
 
       this.efficiencyMapGenerator.reset();
@@ -93,11 +124,29 @@ export class TelemetryProcessor {
       this.enginePowerCurve.reset();
       this.shiftEngine.reset();
 
-      this.pendingProfile = this.carProfileStore.load(meta);
+      this.pendingProfile = this.carProfileStore.load(meta, tuneBuildKey ?? undefined);
     }
 
+    this.activeTune = activeTune;
+    this.activeTuneBuildKey = tuneBuildKey;
     this.lastBuildKey = buildKey;
     this.lastCarMeta = meta;
+  }
+
+  /** Exact ratio from the active GearboxTune when one exists for this car,
+   * otherwise GearRatioEstimator's statistical estimate. */
+  private getRatioToNextGear(gear: number): number | null {
+    if (this.activeTune) {
+      return tuneRatioBetween(this.activeTune, gear, gear + 1);
+    }
+    return this.gearRatioEstimator.getRatioToNextGear(gear);
+  }
+
+  private getRatioToPreviousGear(gear: number): number | null {
+    if (this.activeTune) {
+      return tuneRatioBetween(this.activeTune, gear, gear - 1);
+    }
+    return this.gearRatioEstimator.getRatioToPreviousGear(gear);
   }
 
   /**
@@ -163,7 +212,10 @@ export class TelemetryProcessor {
    */
   public persistCurrentCarProfile(): void {
     if (this.lastCarMeta) {
-      this.carProfileStore.save(this.exportCarProfile(this.lastCarMeta));
+      this.carProfileStore.save(
+        this.exportCarProfile(this.lastCarMeta),
+        this.activeTuneBuildKey ?? undefined,
+      );
     }
   }
 
@@ -177,7 +229,10 @@ export class TelemetryProcessor {
       return;
     }
 
-    this.carProfileStore.save(this.exportCarProfile(this.lastCarMeta));
+    this.carProfileStore.save(
+      this.exportCarProfile(this.lastCarMeta),
+      this.activeTuneBuildKey ?? undefined,
+    );
     this.lastAutosaveAt = now;
   }
 
@@ -252,10 +307,8 @@ export class TelemetryProcessor {
         0,
       throttle: transformedData.input.throttle,
       brake: transformedData.input.brake,
-      ratioToNextGear: this.gearRatioEstimator.getRatioToNextGear(
-        transformedData.input.gear,
-      ),
-      ratioToPreviousGear: this.gearRatioEstimator.getRatioToPreviousGear(
+      ratioToNextGear: this.getRatioToNextGear(transformedData.input.gear),
+      ratioToPreviousGear: this.getRatioToPreviousGear(
         transformedData.input.gear,
       ),
       lookupPower: (rpm: number) => this.enginePowerCurve.getPowerAt(rpm),
@@ -274,6 +327,7 @@ export class TelemetryProcessor {
       parsed: transformedData,
       timestamp: Date.now(),
       carInfo: lookupCarInfo(transformedData.car.ordinal),
+      activeTune: this.activeTune,
       efficiency: {
         map: efficiencyMap,
         recommendations: {

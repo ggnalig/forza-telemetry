@@ -24,8 +24,8 @@
 // buffers are working sets for computing the summary, not the knowledge
 // itself, and naturally rebuild after a few frames of new driving.
 
-import * as fs from "fs";
 import * as path from "path";
+import { readCsvRows, writeCsvRows } from "../utils/csv-store";
 import { GearRatioSummary } from "./gear-ratio-estimator";
 import { GearEfficiencySummary } from "./gear-efficiency-map-generator";
 import { EnginePowerCurve } from "./engine-power-curve";
@@ -128,31 +128,6 @@ function round(value: number, decimals: number): number {
   return Math.round(value * factor) / factor;
 }
 
-/** Every field in this store is numeric, a string with no commas (the build
- * key), or an ISO timestamp - no commas or quotes ever appear in a value, so
- * a hand-rolled CSV reader/writer is safe and avoids pulling in a parsing
- * dependency for a five-file hobby dataset. */
-function readCsvRows(filePath: string): string[][] {
-  if (!fs.existsSync(filePath)) return [];
-  const content = fs.readFileSync(filePath, "utf-8").trim();
-  if (!content) return [];
-  return content
-    .split("\n")
-    .slice(1) // drop header row
-    .filter((line) => line.length > 0)
-    .map((line) => line.split(","));
-}
-
-function writeCsvRows(
-  filePath: string,
-  headers: string[],
-  rows: (string | number)[][],
-): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const lines = [headers.join(","), ...rows.map((row) => row.join(","))];
-  fs.writeFileSync(filePath, lines.join("\n") + "\n", "utf-8");
-}
-
 export class CarProfileStore {
   private readonly baseDir: string;
 
@@ -160,8 +135,11 @@ export class CarProfileStore {
     this.baseDir = baseDir;
   }
 
-  save(profile: CarProfile): void {
-    const buildKey = computeBuildKey(profile.meta);
+  /** `buildKeyOverride` lets a caller (TelemetryProcessor, when a manual
+   * GearboxTune is active) key this profile by the tune's own id instead of
+   * the auto-computed key - see TelemetryProcessor.handleCarChange. */
+  save(profile: CarProfile, buildKeyOverride?: string): void {
+    const buildKey = buildKeyOverride ?? computeBuildKey(profile.meta);
     try {
       this.saveCars(buildKey, profile);
       this.saveGearRatios(buildKey, profile);
@@ -173,8 +151,8 @@ export class CarProfileStore {
     }
   }
 
-  load(meta: CarMeta): CarProfile | null {
-    const buildKey = computeBuildKey(meta);
+  load(meta: CarMeta, buildKeyOverride?: string): CarProfile | null {
+    const buildKey = buildKeyOverride ?? computeBuildKey(meta);
     try {
       const savedMeta = this.loadCarMeta(buildKey);
       if (!savedMeta) return null;

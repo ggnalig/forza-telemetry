@@ -50,6 +50,7 @@ export class TelemetryWebSocketServer {
       parsed: data.parsed,
       timestamp: data.timestamp,
       carInfo: data.carInfo,
+      activeTune: data.activeTune,
       efficiency: data.efficiency,
       showRecommendation: SHOW_RECOMMENDATION,
       broadcastId: this.broadcastCount++,

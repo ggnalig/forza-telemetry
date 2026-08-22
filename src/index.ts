@@ -9,20 +9,26 @@ import { fh6TelemetryParser } from "./udp/parser";
 import { TelemetryProcessor } from "./telemetry/processor";
 import WebSocketServer from "./websocket/server";
 import { TelemetryLogger } from "./utils/logger";
+import { GearboxTuneStore } from "./services/gearbox-tune-store";
+import { TuneApiServer } from "./http/tune-api-server";
 
 class CarDashTelemetrySystem {
   private udpListener: UdpListener;
   private telemetryProcessor: TelemetryProcessor;
   private webSocketServer: WebSocketServer;
   private telemetryLogger: TelemetryLogger;
+  private tuneApiServer: TuneApiServer;
   private isRunning: boolean = false;
   private debugMode: boolean = false;
 
   constructor() {
+    const gearboxTuneStore = new GearboxTuneStore();
+
     this.udpListener = new UdpListener(7300);
-    this.telemetryProcessor = new TelemetryProcessor();
+    this.telemetryProcessor = new TelemetryProcessor(false, undefined, gearboxTuneStore);
     this.webSocketServer = new WebSocketServer(3001);
     this.telemetryLogger = new TelemetryLogger();
+    this.tuneApiServer = new TuneApiServer(gearboxTuneStore, 3002);
 
     this.setupEventHandlers();
   }
@@ -107,12 +113,14 @@ class CarDashTelemetrySystem {
       await this.udpListener.start();
 
       // WebSocket server is already started in constructor
+      this.tuneApiServer.start();
 
       this.isRunning = true;
 
       console.log("✅ Telemetry system started successfully");
       console.log(`📡 UDP listener on port ${this.udpListener.getPort()}`);
       console.log("🌐 WebSocket server on port 3001");
+      console.log("🔧 Tune API on port 3002");
       console.log("⏳ Waiting for FH6 Data Out 324-byte telemetry data...");
       console.log("");
       console.log("🔧 System Features:");
@@ -149,6 +157,9 @@ class CarDashTelemetrySystem {
 
       // Stop WebSocket server
       await this.webSocketServer.stop();
+
+      // Stop tune API server
+      await this.tuneApiServer.stop();
 
       this.isRunning = false;
       console.log("✅ Telemetry system stopped");

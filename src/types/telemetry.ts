@@ -183,6 +183,17 @@ export interface ProcessedTelemetryData {
     model: string;
     displayName: string;
   } | null;
+  // The manually-entered GearboxTune active for this car, if any - see
+  // src/services/gearbox-tune-store.ts. Null means gear ratios are coming
+  // from GearRatioEstimator's statistical estimate instead.
+  activeTune: {
+    id: string;
+    carOrdinal: number;
+    name: string;
+    gearRatios: Record<number, number>;
+    createdAt: string;
+    updatedAt: string;
+  } | null;
   efficiency?: {
     map: {
       [gear: number]: {

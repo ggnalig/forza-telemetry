@@ -15,6 +15,7 @@ import * as path from "node:path";
 import { fh6TelemetryParser } from "../src/udp/parser";
 import { TelemetryProcessor } from "../src/telemetry/processor";
 import { CarProfileStore } from "../src/services/car-profile-store";
+import { GearboxTuneStore } from "../src/services/gearbox-tune-store";
 
 const FH6_DASH_SIZE = 324;
 
@@ -27,7 +28,11 @@ const testProfileDir = fs.mkdtempSync(
 after(() => fs.rmSync(testProfileDir, { recursive: true, force: true }));
 
 function createTestProcessor(): TelemetryProcessor {
-  return new TelemetryProcessor(false, new CarProfileStore(testProfileDir));
+  return new TelemetryProcessor(
+    false,
+    new CarProfileStore(testProfileDir),
+    new GearboxTuneStore(testProfileDir),
+  );
 }
 
 const OFFSETS = {
