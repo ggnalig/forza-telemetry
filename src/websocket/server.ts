@@ -1,6 +1,14 @@
 import { WebSocketServer as WSWebSocketServer } from "ws";
 import { ProcessedTelemetryData } from "../types/telemetry";
 
+// Single source of truth for whether the "smart" gauge features (dynamic
+// redline, shift recommendation, shift lights) are exposed at all - the UI
+// reads this straight off the payload instead of needing its own copy of
+// the flag, so there's only one place to toggle. Defaults to hidden: the
+// model's recommendations are still a work in progress, so this stays off
+// until explicitly enabled.
+const SHOW_RECOMMENDATION = process.env.SHOW_RECOMMENDATION === "true";
+
 export class TelemetryWebSocketServer {
   private wss: WSWebSocketServer;
   private clients: Set<any> = new Set();
@@ -43,6 +51,7 @@ export class TelemetryWebSocketServer {
       timestamp: data.timestamp,
       carInfo: data.carInfo,
       efficiency: data.efficiency,
+      showRecommendation: SHOW_RECOMMENDATION,
       broadcastId: this.broadcastCount++,
     };
   }
