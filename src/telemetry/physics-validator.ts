@@ -12,7 +12,7 @@ export interface ValidationResult {
   validationReason: string;
   debugInfo: {
     rawTorque: number;
-    rawPower: number; // Raw power in Watts
+    rawPower: number; // Raw power in kW
     computedPower: number; // Computed power in kW
     validationReason: string;
     isBurnout: boolean;
@@ -46,10 +46,10 @@ export class PhysicsValidator {
    * Implements all critical requirements for production-grade telemetry
    */
   public validatePhysicsData(data: TelemetryData): ValidationResult {
-    // CRITICAL: Raw power from telemetry is in WATTS, not kW
+    // NOTE: the raw telemetry field is Watts, but the UDP parser already
+    // divides it by 1000 before it reaches TelemetryData, so this is kW.
     const rawTorque = data.performance.torqueNm;
-    const rawPowerWatts = data.performance.powerKw; // This is actually in WATTS
-    const rawPowerKw = rawPowerWatts; // Convert W to kW
+    const rawPowerKw = data.performance.powerKw;
 
     const rpm = data.engine.rpm;
     const idleRpm = data.engine.idleRpm;
@@ -153,9 +153,7 @@ export class PhysicsValidator {
 
       console.log("🔧 Physics Validation Debug:");
       console.log(`  Raw Torque: ${rawTorque} Nm`);
-      console.log(
-        `  Raw Power: ${rawPowerWatts} W (${rawPowerKw.toFixed(2)} kW)`,
-      );
+      console.log(`  Raw Power: ${rawPowerKw.toFixed(2)} kW`);
       console.log(`  Computed Power: ${computedPower.toFixed(2)} kW`);
       console.log(`  Validation Reason: ${validationReason}`);
       console.log(`  Is Burnout: ${isBurnout}`);
@@ -174,7 +172,7 @@ export class PhysicsValidator {
       validationReason,
       debugInfo: {
         rawTorque,
-        rawPower: rawPowerWatts, // Store raw power in Watts for debug
+        rawPower: rawPowerKw,
         computedPower: isPowerFallback
           ? validatedPowerKw
           : this.calculatePowerFromTorque(validatedTorque, rpm),

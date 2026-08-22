@@ -8,18 +8,96 @@ import {
 } from "../types/telemetry";
 import { PhysicsValidator } from "./physics-validator";
 import { GearEfficiencyMapGenerator } from "../services/gear-efficiency-map-generator";
-import { ShiftEngine } from "../services/shift-engine";
-import { carConfig } from "../config/car";
+import { GearRatioEstimator } from "../services/gear-ratio-estimator";
+import { EnginePowerCurve } from "../services/engine-power-curve";
+import { ShiftEngine, MAX_SUPPORTED_GEAR } from "../services/shift-engine";
+import {
+  CarProfileStore,
+  CarProfile,
+  CarMeta,
+} from "../services/car-profile-store";
 
 export class TelemetryProcessor {
   private physicsValidator: PhysicsValidator;
   private efficiencyMapGenerator: GearEfficiencyMapGenerator;
+  private gearRatioEstimator: GearRatioEstimator;
+  private enginePowerCurve: EnginePowerCurve;
   private shiftEngine: ShiftEngine;
+  private carProfileStore: CarProfileStore;
+  private lastCarOrdinal: number | null = null;
+  private lastCarMeta: CarMeta | null = null;
 
-  constructor(debugMode = false) {
+  constructor(debugMode = false, carProfileStore: CarProfileStore = new CarProfileStore()) {
     this.physicsValidator = new PhysicsValidator(debugMode);
     this.efficiencyMapGenerator = new GearEfficiencyMapGenerator();
+    this.gearRatioEstimator = new GearRatioEstimator();
+    this.enginePowerCurve = new EnginePowerCurve();
     this.shiftEngine = new ShiftEngine();
+    this.carProfileStore = carProfileStore;
+  }
+
+  /**
+   * Every car in Forza has its own gearing/power characteristics - learned
+   * state from a previous car must not bleed into predictions for a new one.
+   * The outgoing car's state is saved to disk first so it can warm-start next
+   * time it's driven; the incoming car's saved profile (if any) is loaded.
+   */
+  private handleCarChange(telemetry: TelemetryData): void {
+    const carOrdinal = telemetry.car.ordinal;
+
+    if (this.lastCarOrdinal !== null && this.lastCarOrdinal !== carOrdinal) {
+      if (this.lastCarMeta) {
+        this.carProfileStore.save(this.exportCarProfile(this.lastCarMeta));
+      }
+
+      this.efficiencyMapGenerator.reset();
+      this.gearRatioEstimator.reset();
+      this.enginePowerCurve.reset();
+      this.shiftEngine.reset();
+
+      const savedProfile = this.carProfileStore.load(carOrdinal);
+      if (savedProfile) {
+        this.importCarProfile(savedProfile);
+      }
+    }
+
+    this.lastCarOrdinal = carOrdinal;
+    this.lastCarMeta = {
+      carOrdinal,
+      carClass: telemetry.car.class,
+      performanceIndex: telemetry.car.performanceIndex,
+      drivetrain: telemetry.car.drivetrain,
+      numCylinders: telemetry.engine.cylinders,
+      idleRpm: telemetry.engine.idleRpm,
+      maxRpm: telemetry.engine.maxRpm,
+    };
+  }
+
+  private exportCarProfile(meta: CarMeta): CarProfile {
+    return {
+      meta,
+      gearRatios: this.gearRatioEstimator.exportState(),
+      gearEfficiency: this.efficiencyMapGenerator.exportState(),
+      powerCurve: this.enginePowerCurve.exportState(),
+      shiftHistory: this.shiftEngine.exportState(),
+    };
+  }
+
+  private importCarProfile(profile: CarProfile): void {
+    this.gearRatioEstimator.importState(profile.gearRatios);
+    this.efficiencyMapGenerator.importState(profile.gearEfficiency);
+    this.enginePowerCurve.importState(profile.powerCurve);
+    this.shiftEngine.importState(profile.shiftHistory);
+  }
+
+  /**
+   * Persists the currently-active car's learned state. Call this on graceful
+   * shutdown so progress isn't lost if the process exits without a car change.
+   */
+  public persistCurrentCarProfile(): void {
+    if (this.lastCarMeta) {
+      this.carProfileStore.save(this.exportCarProfile(this.lastCarMeta));
+    }
   }
 
   /**
@@ -28,6 +106,8 @@ export class TelemetryProcessor {
    */
   public process(rawData: ParsedTelemetryData): ProcessedTelemetryData {
     const telemetry = rawData.parsed;
+
+    this.handleCarChange(telemetry);
 
     // Apply physics validation and normalization
     const physicsValidation =
@@ -49,25 +129,55 @@ export class TelemetryProcessor {
     // Apply transformations
     const transformedData = this.transformTelemetryData(validatedData);
 
+    // Feed the empirical gear ratio estimator so cross-gear rpm drop can be
+    // computed without a hardcoded per-car config.
+    this.gearRatioEstimator.update(
+      transformedData.input.gear,
+      transformedData.engine.rpm,
+      transformedData.performance.speedKmh,
+    );
+
+    // Feed the pooled (gear-independent) WOT power curve used for the
+    // cross-gear optimal shift point calculation.
+    this.enginePowerCurve.update(
+      transformedData.engine.rpm,
+      transformedData.performance.powerKw,
+      transformedData.input.throttle,
+      transformedData.engine.maxRpm,
+    );
+
     // Update efficiency map with current telemetry
     const efficiencyResult = this.efficiencyMapGenerator.update({
       gear: transformedData.input.gear,
       rpm: transformedData.engine.rpm,
-      speed: transformedData.performance.speedKmh,
-      torque: transformedData.performance.torqueNm,
+      power: transformedData.performance.powerKw,
+      throttle: transformedData.input.throttle,
+      maxRpm: transformedData.engine.maxRpm,
     });
 
     // Calculate hybrid shift recommendations using new ShiftEngine
-    const hybridShiftData = this.shiftEngine.update(
-      transformedData.input.gear,
-      transformedData.engine.rpm,
-      transformedData.performance.speedKmh,
-      efficiencyResult.efficiencyMap[transformedData.input.gear]?.rpmOptimal ||
+    const hybridShiftData = this.shiftEngine.update({
+      gear: transformedData.input.gear,
+      rpm: transformedData.engine.rpm,
+      speed: transformedData.performance.speedKmh,
+      maxRpm: transformedData.engine.maxRpm,
+      idleRpm: transformedData.engine.idleRpm,
+      rpmOptimal:
+        efficiencyResult.efficiencyMap[transformedData.input.gear]
+          ?.rpmOptimal || 0,
+      sampleCount:
+        this.efficiencyMapGenerator.getSampleCount(transformedData.input.gear) ||
         0,
-      this.efficiencyMapGenerator.getSampleCount(transformedData.input.gear) ||
-        0,
-      transformedData.input.throttle,
-    );
+      throttle: transformedData.input.throttle,
+      ratioToNextGear: this.gearRatioEstimator.getRatioToNextGear(
+        transformedData.input.gear,
+      ),
+      ratioToPreviousGear: this.gearRatioEstimator.getRatioToPreviousGear(
+        transformedData.input.gear,
+      ),
+      lookupPower: (rpm: number) => this.enginePowerCurve.getPowerAt(rpm),
+      powerCurveSampleCount: this.enginePowerCurve.getSampleCount(),
+    });
 
     return {
       raw: rawData.raw,
@@ -78,7 +188,7 @@ export class TelemetryProcessor {
         recommendations: {
           upshiftRecommended:
             hybridShiftData.recommendation === "upshift" &&
-            transformedData.input.gear < carConfig.gearRatio.length - 1,
+            transformedData.input.gear < MAX_SUPPORTED_GEAR,
           downshiftRecommended:
             hybridShiftData.recommendation === "downshift" &&
             transformedData.input.gear > 1,
@@ -94,8 +204,10 @@ export class TelemetryProcessor {
    * Validate telemetry data consistency
    */
   private validateTelemetryConsistency(data: TelemetryData): TelemetryData {
-    // Check for logical inconsistencies
-    let validatedData = { ...data };
+    // Deep clone: this function mutates nested objects (engine, wheels, input).
+    // A shallow `{ ...data }` would still share those nested references with
+    // the caller's object, silently mutating it too.
+    const validatedData = structuredClone(data);
 
     // Validate speed vs RPM relationship
     if (

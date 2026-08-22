@@ -1,8 +1,9 @@
 export interface TelemetryFrame {
   gear: number;
   rpm: number;
-  speed: number;
-  torque: number;
+  power: number;
+  throttle: number;
+  maxRpm: number;
 }
 
 export interface GearEfficiencyStats {
@@ -21,25 +22,40 @@ export interface ShiftRecommendations {
   shiftRecommendation: string;
 }
 
+export interface GearEfficiencySummary {
+  [gear: number]: {
+    rpmMin: number;
+    rpmMax: number;
+    rpmAvg: number;
+    rpmOptimal: number;
+    shiftWindowLow: number;
+    shiftWindowHigh: number;
+    wotSampleCount: number;
+    totalSampleCount: number;
+  };
+}
+
 export class GearEfficiencyMapGenerator {
   private efficiencyMap: GearEfficiencyMap = {};
-  private sampleCounts: { [gear: number]: number } = {};
-  private lastSpeedByGear: { [gear: number]: number } = {};
+  private totalSampleCounts: { [gear: number]: number } = {};
+  private wotSampleCounts: { [gear: number]: number } = {};
   private efficiencyScoreByRpm: {
     [gear: number]: { [rpmBucket: number]: number };
   } = {};
   private rpmSamples: { [gear: number]: number[] } = {};
-  private readonly WINDOW_MARGIN = 250;
+  private readonly WOT_THROTTLE_THRESHOLD = 0.9;
+  private readonly WINDOW_MARGIN_RATIO = 0.02; // % of redline, replaces fixed 250rpm
   private readonly RPM_BUCKET_SIZE = 100;
   private readonly MIN_SAMPLES = 5;
   private readonly MAX_SAMPLES = 100;
-  private readonly STABILITY_RPM_THRESHOLD = 500;
+  private readonly STABILITY_RPM_RATIO = 0.04; // % of redline, replaces fixed 500rpm
 
   update(frame: TelemetryFrame): {
     efficiencyMap: GearEfficiencyMap;
     shiftRecommendations: ShiftRecommendations;
   } {
-    const { gear, rpm, speed } = frame;
+    const { gear, rpm, power, throttle, maxRpm } = frame;
+    const windowMargin = maxRpm * this.WINDOW_MARGIN_RATIO;
 
     if (!this.efficiencyMap[gear]) {
       this.efficiencyMap[gear] = {
@@ -47,11 +63,12 @@ export class GearEfficiencyMapGenerator {
         rpmMax: rpm,
         rpmAvg: rpm,
         rpmOptimal: rpm,
-        shiftWindow: [rpm - this.WINDOW_MARGIN, rpm + this.WINDOW_MARGIN],
+        shiftWindow: [rpm - windowMargin, rpm + windowMargin],
       };
-      this.sampleCounts[gear] = 1;
-      this.lastSpeedByGear[gear] = speed;
+      this.totalSampleCounts[gear] = 1;
+      this.wotSampleCounts[gear] = 0;
       this.efficiencyScoreByRpm[gear] = {};
+      this.updateRpmSamples(gear, rpm, maxRpm);
       return {
         efficiencyMap: this.efficiencyMap,
         shiftRecommendations: {
@@ -61,49 +78,54 @@ export class GearEfficiencyMapGenerator {
     }
 
     const currentStats = this.efficiencyMap[gear];
-    const currentCount = this.sampleCounts[gear];
-    const lastSpeed = this.lastSpeedByGear[gear];
+    const currentTotalCount = this.totalSampleCounts[gear];
 
-    this.updateRpmSamples(gear, rpm);
+    this.updateRpmSamples(gear, rpm, maxRpm);
 
+    // RPM distribution tracked from every sample, not just WOT ones,
+    // so the shift window stays representative of real driving.
     currentStats.rpmMin = Math.min(currentStats.rpmMin, rpm);
     currentStats.rpmMax = Math.max(currentStats.rpmMax, rpm);
     currentStats.rpmAvg =
-      (currentStats.rpmAvg * currentCount + rpm) / (currentCount + 1);
+      (currentStats.rpmAvg * currentTotalCount + rpm) / (currentTotalCount + 1);
+    this.totalSampleCounts[gear] = currentTotalCount + 1;
 
-    // const speedGain = Math.max(0, speed - lastSpeed);
-    const speedGain = Math.max(0, (speed - lastSpeed) * 0.7);
-    const rpmBucket =
-      Math.floor(rpm / this.RPM_BUCKET_SIZE) * this.RPM_BUCKET_SIZE;
+    // Only wide-open-throttle samples are trusted to represent the engine's
+    // actual power curve - partial throttle/coasting samples are noise here.
+    if (throttle >= this.WOT_THROTTLE_THRESHOLD) {
+      const rpmBucket =
+        Math.floor(rpm / this.RPM_BUCKET_SIZE) * this.RPM_BUCKET_SIZE;
 
-    if (!this.efficiencyScoreByRpm[gear][rpmBucket]) {
-      this.efficiencyScoreByRpm[gear][rpmBucket] = 0;
-    }
-    this.efficiencyScoreByRpm[gear][rpmBucket] += speedGain;
-
-    if (currentCount >= this.MIN_SAMPLES) {
-      const rpmBuckets = Object.keys(this.efficiencyScoreByRpm[gear]).map(
-        Number,
+      const previousBest = this.efficiencyScoreByRpm[gear][rpmBucket] ?? 0;
+      this.efficiencyScoreByRpm[gear][rpmBucket] = Math.max(
+        previousBest,
+        power,
       );
-      if (rpmBuckets.length > 1) {
-        let bestBucket = rpmBuckets[0];
-        let bestScore = this.efficiencyScoreByRpm[gear][bestBucket];
 
-        for (const bucket of rpmBuckets) {
-          const score = this.efficiencyScoreByRpm[gear][bucket];
-          if (score > bestScore) {
-            bestScore = score;
-            bestBucket = bucket;
+      const wotCount = this.wotSampleCounts[gear] + 1;
+      this.wotSampleCounts[gear] = wotCount;
+
+      if (wotCount >= this.MIN_SAMPLES) {
+        const rpmBuckets = Object.keys(this.efficiencyScoreByRpm[gear]).map(
+          Number,
+        );
+        if (rpmBuckets.length > 1) {
+          let bestBucket = rpmBuckets[0];
+          let bestPower = this.efficiencyScoreByRpm[gear][bestBucket];
+
+          for (const bucket of rpmBuckets) {
+            const powerAtBucket = this.efficiencyScoreByRpm[gear][bucket];
+            if (powerAtBucket > bestPower) {
+              bestPower = powerAtBucket;
+              bestBucket = bucket;
+            }
           }
-        }
 
-        currentStats.rpmOptimal = bestBucket + this.RPM_BUCKET_SIZE / 2;
-        currentStats.shiftWindow = this.calculatePercentileBasedWindow(gear);
+          currentStats.rpmOptimal = bestBucket + this.RPM_BUCKET_SIZE / 2;
+          currentStats.shiftWindow = this.calculatePercentileBasedWindow(gear);
+        }
       }
     }
-
-    this.sampleCounts[gear] = currentCount + 1;
-    this.lastSpeedByGear[gear] = speed;
 
     const shiftRecommendations = this.calculateShiftRecommendations(gear, rpm);
 
@@ -113,14 +135,14 @@ export class GearEfficiencyMapGenerator {
     };
   }
 
-  private isStableRpmSample(rpm: number, gear: number): boolean {
+  private isStableRpmSample(rpm: number, gear: number, maxRpm: number): boolean {
     const samples = this.rpmSamples[gear] || [];
     if (samples.length < 3) return true;
 
     const recentSamples = samples.slice(-3);
     const avgRecent =
       recentSamples.reduce((a, b) => a + b, 0) / recentSamples.length;
-    return Math.abs(rpm - avgRecent) < this.STABILITY_RPM_THRESHOLD;
+    return Math.abs(rpm - avgRecent) < maxRpm * this.STABILITY_RPM_RATIO;
   }
 
   private calculateShiftRecommendations(
@@ -128,16 +150,11 @@ export class GearEfficiencyMapGenerator {
     rpm: number,
   ): ShiftRecommendations {
     const stats = this.efficiencyMap[gear];
-    if (!stats || this.sampleCounts[gear] < this.MIN_SAMPLES) {
+    if (!stats || this.wotSampleCounts[gear] < this.MIN_SAMPLES) {
       return { shiftRecommendation: "-" };
     }
 
     const [windowMin, windowMax] = stats.shiftWindow;
-    // const upshiftThreshold = windowMax - 10;
-    // const downshiftThreshold = windowMin + 10;
-    // const upshiftThreshold = windowMax - (windowMax - windowMin) * 0.02;
-    // const downshiftThreshold = windowMin + (windowMax - windowMin) * 0.05;
-
     const windowSize = windowMax - windowMin;
     const hysteresis = Math.max(50, windowSize * 0.03);
 
@@ -170,12 +187,12 @@ export class GearEfficiencyMapGenerator {
     ];
   }
 
-  private updateRpmSamples(gear: number, rpm: number): void {
+  private updateRpmSamples(gear: number, rpm: number, maxRpm: number): void {
     if (!this.rpmSamples[gear]) {
       this.rpmSamples[gear] = [];
     }
 
-    if (this.isStableRpmSample(rpm, gear)) {
+    if (this.isStableRpmSample(rpm, gear, maxRpm)) {
       this.rpmSamples[gear].push(rpm);
 
       if (this.rpmSamples[gear].length > this.MAX_SAMPLES) {
@@ -202,14 +219,63 @@ export class GearEfficiencyMapGenerator {
     return { ...this.efficiencyMap };
   }
 
+  /** WOT sample count - used as the confidence signal for shift predictions. */
   getSampleCount(gear: number): number {
-    return this.sampleCounts[gear] || 0;
+    return this.wotSampleCounts[gear] || 0;
+  }
+
+  /**
+   * Persisted shape is a per-gear summary of the derived stats only - the
+   * internal per-bucket power histogram and raw rpm sample buffer are working
+   * sets used to *compute* rpmOptimal/shiftWindow, not the knowledge itself.
+   * They naturally rebuild from a few frames of new driving after import.
+   */
+  exportState(): GearEfficiencySummary {
+    const summary: GearEfficiencySummary = {};
+    for (const gearKey of Object.keys(this.efficiencyMap)) {
+      const gear = Number(gearKey);
+      const stats = this.efficiencyMap[gear];
+      summary[gear] = {
+        rpmMin: stats.rpmMin,
+        rpmMax: stats.rpmMax,
+        rpmAvg: stats.rpmAvg,
+        rpmOptimal: stats.rpmOptimal,
+        shiftWindowLow: stats.shiftWindow[0],
+        shiftWindowHigh: stats.shiftWindow[1],
+        wotSampleCount: this.wotSampleCounts[gear] ?? 0,
+        totalSampleCount: this.totalSampleCounts[gear] ?? 0,
+      };
+    }
+    return summary;
+  }
+
+  importState(state: GearEfficiencySummary): void {
+    this.efficiencyMap = {};
+    this.totalSampleCounts = {};
+    this.wotSampleCounts = {};
+    this.efficiencyScoreByRpm = {};
+    this.rpmSamples = {};
+
+    for (const gearKey of Object.keys(state ?? {})) {
+      const gear = Number(gearKey);
+      const s = state[gear];
+      this.efficiencyMap[gear] = {
+        rpmMin: s.rpmMin,
+        rpmMax: s.rpmMax,
+        rpmAvg: s.rpmAvg,
+        rpmOptimal: s.rpmOptimal,
+        shiftWindow: [s.shiftWindowLow, s.shiftWindowHigh],
+      };
+      this.wotSampleCounts[gear] = s.wotSampleCount;
+      this.totalSampleCounts[gear] = s.totalSampleCount;
+      this.efficiencyScoreByRpm[gear] = {};
+    }
   }
 
   reset(): void {
     this.efficiencyMap = {};
-    this.sampleCounts = {};
-    this.lastSpeedByGear = {};
+    this.totalSampleCounts = {};
+    this.wotSampleCounts = {};
     this.efficiencyScoreByRpm = {};
     this.rpmSamples = {};
   }

@@ -141,6 +141,9 @@ class CarDashTelemetrySystem {
     try {
       console.log("🛑 Stopping telemetry system...");
 
+      // Persist the current car's learned shift/gearing profile before exit
+      this.telemetryProcessor.persistCurrentCarProfile();
+
       // Stop UDP listener
       await this.udpListener.stop();
 
