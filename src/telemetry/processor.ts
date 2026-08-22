@@ -147,7 +147,7 @@ export class TelemetryProcessor {
     );
 
     // Update efficiency map with current telemetry
-    const efficiencyResult = this.efficiencyMapGenerator.update({
+    const efficiencyMap = this.efficiencyMapGenerator.update({
       gear: transformedData.input.gear,
       rpm: transformedData.engine.rpm,
       power: transformedData.performance.powerKw,
@@ -163,8 +163,7 @@ export class TelemetryProcessor {
       maxRpm: transformedData.engine.maxRpm,
       idleRpm: transformedData.engine.idleRpm,
       rpmOptimal:
-        efficiencyResult.efficiencyMap[transformedData.input.gear]
-          ?.rpmOptimal || 0,
+        efficiencyMap[transformedData.input.gear]?.rpmOptimal || 0,
       sampleCount:
         this.efficiencyMapGenerator.getSampleCount(transformedData.input.gear) ||
         0,
@@ -186,7 +185,7 @@ export class TelemetryProcessor {
       parsed: transformedData,
       timestamp: Date.now(),
       efficiency: {
-        map: efficiencyResult.efficiencyMap,
+        map: efficiencyMap,
         recommendations: {
           upshiftRecommended:
             hybridShiftData.recommendation === "upshift" &&

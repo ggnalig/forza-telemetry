@@ -70,8 +70,8 @@ const GEAR_EFFICIENCY_HEADERS = [
   "rpm_max",
   "rpm_avg",
   "rpm_optimal",
-  "shift_window_low",
-  "shift_window_high",
+  "observed_rpm_low",
+  "observed_rpm_high",
   "wot_sample_count",
   "total_sample_count",
 ];
@@ -262,8 +262,8 @@ export class CarProfileStore {
       Math.round(s.rpmMax),
       Math.round(s.rpmAvg),
       Math.round(s.rpmOptimal),
-      Math.round(s.shiftWindowLow),
-      Math.round(s.shiftWindowHigh),
+      Math.round(s.observedRpmLow),
+      Math.round(s.observedRpmHigh),
       s.wotSampleCount,
       s.totalSampleCount,
     ]);
@@ -283,8 +283,8 @@ export class CarProfileStore {
         rpmMax: Number(row[4]),
         rpmAvg: Number(row[5]),
         rpmOptimal: Number(row[6]),
-        shiftWindowLow: Number(row[7]),
-        shiftWindowHigh: Number(row[8]),
+        observedRpmLow: Number(row[7]),
+        observedRpmHigh: Number(row[8]),
         wotSampleCount: Number(row[9]),
         totalSampleCount: Number(row[10]),
       };

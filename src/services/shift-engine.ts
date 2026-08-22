@@ -10,7 +10,6 @@ export interface ShiftHistory {
 
 export interface HybridShiftData {
   finalShiftRPM: number;
-  shiftWindow: [number, number];
   recommendation: "upshift" | "downshift" | "hold";
   lights?: string[];
 }
@@ -49,13 +48,11 @@ export class ShiftEngine {
   private lastGear: number = 0;
   private lastRPM: number = 0;
   private lastThrottle: number = 0;
-  private shiftLightBuffer: string[] = [];
   private blinkState: boolean = false;
   private blinkCounter: number = 0;
   private downshiftMode: DownshiftMode = "power";
-  private readonly MAX_BUFFER_SIZE = 10;
+  private readonly LIGHT_BAR_SIZE = 10;
   private readonly MAX_HISTORY = 50;
-  private readonly WINDOW_MARGIN_RATIO = 0.08;
   private readonly WOT_THROTTLE_THRESHOLD = 0.9;
   private readonly MIN_CONFIDENT_SAMPLES = 5;
   private readonly MIN_POWER_CURVE_SAMPLES = 20;
@@ -76,6 +73,16 @@ export class ShiftEngine {
   // the idle-to-redline range, not raw maxRpm, so high-idle vehicles (trucks)
   // aren't shortchanged.
   private readonly BRAKING_BAND_FALLBACK_LOW_RATIO = 0.35;
+  // Shift light bar: default off, green fills in from position 1 as rpm rises
+  // toward the shift point, yellow for the last few positions as it gets
+  // close, then the whole bar blinks orange exactly in the optimal shift
+  // window and blinks red once past it. All boundaries are rpm-based (not
+  // time-based) so the light stays meaningful regardless of how fast the
+  // engine happens to be revving - see audit-result/audit.md for the reasoning.
+  private readonly LIGHT_APPROACH_RANGE_RATIO = 0.15; // where the bar starts filling, below the optimal point
+  private readonly LIGHT_BLINK_ZONE_WIDTH_RATIO = 0.04; // how much rpm the orange zone spans before turning red
+  private readonly LIGHT_GREEN_POSITIONS = 5; // positions 1-5 green, 6-10 yellow, when lit
+  private readonly LIGHT_BLINK_TOGGLE_INTERVAL = 6; // frames between on/off blink toggles
 
   update(input: ShiftEngineInput): HybridShiftData {
     const {
@@ -98,8 +105,8 @@ export class ShiftEngine {
     if (gear < 1 || gear > MAX_SUPPORTED_GEAR) {
       return {
         finalShiftRPM: 0,
-        shiftWindow: [0, 0],
         recommendation: "hold",
+        lights: new Array(this.LIGHT_BAR_SIZE).fill("⚫"),
       };
     }
 
@@ -145,11 +152,6 @@ export class ShiftEngine {
       ratioToNextGear,
     );
 
-    const shiftWindow: [number, number] = [
-      finalShiftRPM * (1 - this.WINDOW_MARGIN_RATIO),
-      finalShiftRPM * (1 + this.WINDOW_MARGIN_RATIO),
-    ];
-
     const mode = this.updateDownshiftMode(throttle, brake);
     const downshiftRPM = this.determineDownshiftRPM(
       mode,
@@ -169,16 +171,10 @@ export class ShiftEngine {
       ratioToPreviousGear,
     );
 
-    const lights = this.calculateThrottleAwareShiftLights(
-      rpm,
-      gear,
-      throttle,
-      shiftWindow,
-    );
+    const lights = this.calculateShiftLights(rpm, finalShiftRPM, maxRpm);
 
     return {
       finalShiftRPM,
-      shiftWindow,
       recommendation,
       lights,
     };
@@ -436,81 +432,74 @@ export class ShiftEngine {
     return Math.min(shiftRPM, redlineCap);
   }
 
-  private calculateThrottleAwareShiftLights(
+  /**
+   * F1-style shift light bar (LIGHT_BAR_SIZE positions), purely rpm-based -
+   * default off; green fills in from position 1 as rpm climbs toward the
+   * shift point; the last few positions turn yellow as it gets close; the
+   * whole bar blinks orange exactly in the optimal shift window
+   * (rpm in [finalShiftRPM*0.98, that + LIGHT_BLINK_ZONE_WIDTH_RATIO*maxRpm]),
+   * matching exactly where `recommendation` becomes "upshift"; then blinks
+   * red once past that window.
+   */
+  private calculateShiftLights(
     rpm: number,
-    gear: number,
-    throttle: number,
-    shiftWindow: [number, number],
+    finalShiftRPM: number,
+    maxRpm: number,
   ): string[] {
-    if (
-      gear < 1 ||
-      gear > MAX_SUPPORTED_GEAR ||
-      !shiftWindow ||
-      (shiftWindow[0] === 0 && shiftWindow[1] === 0)
-    ) {
-      return new Array(this.MAX_BUFFER_SIZE).fill("⚫");
+    if (finalShiftRPM <= 0) {
+      this.resetBlink();
+      return new Array(this.LIGHT_BAR_SIZE).fill("⚫");
     }
 
-    if (throttle < 0.2) {
-      return new Array(this.MAX_BUFFER_SIZE).fill("🟢");
+    const optimalStart = finalShiftRPM * this.REDLINE_SAFETY_MARGIN_RATIO; // same 0.98 trigger as calculateRecommendation
+    const optimalEnd =
+      optimalStart + maxRpm * this.LIGHT_BLINK_ZONE_WIDTH_RATIO;
+    const approachStart =
+      optimalStart - maxRpm * this.LIGHT_APPROACH_RANGE_RATIO;
+
+    if (rpm > optimalEnd) {
+      return this.blinkBar("🔴");
+    }
+    if (rpm >= optimalStart) {
+      return this.blinkBar("🟠");
     }
 
-    const [windowMin, windowMax] = shiftWindow;
-    const windowRange = windowMax - windowMin;
+    this.resetBlink();
 
-    if (windowRange <= 0) {
-      return new Array(this.MAX_BUFFER_SIZE).fill("⚫");
+    if (rpm < approachStart) {
+      return new Array(this.LIGHT_BAR_SIZE).fill("⚫");
     }
 
-    let normalizedRPM = (rpm - windowMin) / windowRange;
-    normalizedRPM = Math.max(0, Math.min(1.2, normalizedRPM));
+    const progress = Math.max(
+      0,
+      Math.min(1, (rpm - approachStart) / (optimalStart - approachStart)),
+    );
+    const litCount = Math.round(progress * this.LIGHT_BAR_SIZE);
 
-    const gearFactor = gear / MAX_SUPPORTED_GEAR;
-    const aggression = throttle * (0.7 + 0.3 * gearFactor);
-
-    const t1 = 0.35 - 0.1 * aggression;
-    const t2 = 0.6 - 0.1 * aggression;
-    const t3 = 0.85 - 0.05 * aggression;
-
-    let lightColor: string;
-
-    if (normalizedRPM < t1) {
-      lightColor = "🟢";
-    } else if (normalizedRPM < t2) {
-      lightColor = "🟡";
-    } else if (normalizedRPM < t3) {
-      lightColor = "🟠";
-    } else if (normalizedRPM < 1.0) {
-      lightColor = "🔴";
-    } else {
-      lightColor = this.calculateBlinkingRed(normalizedRPM);
+    const bar: string[] = [];
+    for (let position = 1; position <= this.LIGHT_BAR_SIZE; position++) {
+      if (position > litCount) {
+        bar.push("⚫");
+      } else {
+        bar.push(position <= this.LIGHT_GREEN_POSITIONS ? "🟢" : "🟡");
+      }
     }
-
-    this.shiftLightBuffer.push(lightColor);
-    if (this.shiftLightBuffer.length > this.MAX_BUFFER_SIZE) {
-      this.shiftLightBuffer.shift();
-    }
-
-    return [...this.shiftLightBuffer];
+    return bar;
   }
 
-  private calculateBlinkingRed(normalizedRPM: number): string {
+  private blinkBar(color: string): string[] {
     this.blinkCounter++;
-
-    let blinkSpeed: number;
-    if (normalizedRPM > 1.05) {
-      blinkSpeed = 2;
-    } else if (normalizedRPM > 0.98) {
-      blinkSpeed = 4;
-    } else {
-      blinkSpeed = 8;
-    }
-
-    if (this.blinkCounter % blinkSpeed === 0) {
+    if (this.blinkCounter % this.LIGHT_BLINK_TOGGLE_INTERVAL === 0) {
       this.blinkState = !this.blinkState;
     }
+    return new Array(this.LIGHT_BAR_SIZE).fill(
+      this.blinkState ? color : "⚫",
+    );
+  }
 
-    return this.blinkState ? "🔴" : "⚫";
+  private resetBlink(): void {
+    this.blinkCounter = 0;
+    this.blinkState = false;
   }
 
   private calculateRecommendation(

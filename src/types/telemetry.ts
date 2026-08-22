@@ -183,7 +183,7 @@ export interface ProcessedTelemetryData {
         rpmMax: number;
         rpmAvg: number;
         rpmOptimal: number;
-        shiftWindow: [number, number];
+        observedRpmRange: [number, number];
       };
     };
     recommendations?: {

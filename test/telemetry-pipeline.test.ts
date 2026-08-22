@@ -486,6 +486,142 @@ test("downshift mode switching has hysteresis and doesn't flap during trail-brak
   );
 });
 
+// --- Shift light bar: default off, green/yellow fill bar while approaching,
+// then the whole bar blinks orange exactly at the upshift trigger and blinks
+// red once past it. Mirrors the private constants in ShiftEngine
+// (LIGHT_APPROACH_RANGE_RATIO=0.15, LIGHT_BLINK_ZONE_WIDTH_RATIO=0.04,
+// LIGHT_GREEN_POSITIONS=5) so the test can compute exact expected rpm points. ---
+
+const LIGHT_APPROACH_RANGE_RATIO = 0.15;
+const LIGHT_BLINK_ZONE_WIDTH_RATIO = 0.04;
+
+/** Feeds `frames` frames at a fixed rpm and returns the distinct light-bar
+ * colors seen (each bar is expected to be uniform - one color repeated). */
+function sampleBlinkColors(
+  processor: TelemetryProcessor,
+  gear: number,
+  ratio: number,
+  carOrdinal: number,
+  rpm: number,
+  frames: number,
+): Set<string> {
+  const seen = new Set<string>();
+  for (let i = 0; i < frames; i++) {
+    const r = feedFrame(processor, gear, ratio, carOrdinal, rpm, 0.5);
+    const bar = r.efficiency?.lights ?? [];
+    assert.ok(
+      bar.every((c) => c === bar[0]),
+      `expected a uniform bar in the blink zone, got ${bar.join("")}`,
+    );
+    seen.add(bar[0]);
+  }
+  return seen;
+}
+
+test("shift light bar: default off, then fills green->yellow while approaching the shift point", () => {
+  const processor = createTestProcessor();
+  const carOrdinal = 8001;
+
+  let baseline;
+  for (let i = 0; i < 5; i++) {
+    baseline = feedFrame(processor, 5, 30, carOrdinal, 4000 + i * 50, 1);
+  }
+  const finalShiftRPM = baseline!.efficiency?.finalShiftRPM ?? 0;
+  assert.ok(finalShiftRPM > 0, "expected a bootstrapped finalShiftRPM");
+
+  const optimalStart = finalShiftRPM * 0.98;
+  const approachStart =
+    optimalStart - DOWNSHIFT_MAX_RPM * LIGHT_APPROACH_RANGE_RATIO;
+
+  const off = feedFrame(
+    processor,
+    5,
+    30,
+    carOrdinal,
+    approachStart - 200,
+    0.5,
+  );
+  assert.deepEqual(
+    off.efficiency?.lights,
+    new Array(10).fill("⚫"),
+    "below the approach range, the bar should be fully off",
+  );
+
+  // Exactly halfway through the approach zone: 5 of 10 positions lit, all green.
+  const halfway = feedFrame(
+    processor,
+    5,
+    30,
+    carOrdinal,
+    approachStart + 0.5 * (optimalStart - approachStart),
+    0.5,
+  );
+  assert.deepEqual(
+    halfway.efficiency?.lights,
+    ["🟢", "🟢", "🟢", "🟢", "🟢", "⚫", "⚫", "⚫", "⚫", "⚫"],
+    "halfway through the approach zone, exactly 5 green positions should be lit",
+  );
+
+  // 80% through: 8 of 10 lit - positions 1-5 green, 6-8 yellow (yellow starts
+  // at position 6, per the requested adjustment).
+  const almostThere = feedFrame(
+    processor,
+    5,
+    30,
+    carOrdinal,
+    approachStart + 0.8 * (optimalStart - approachStart),
+    0.5,
+  );
+  assert.deepEqual(
+    almostThere.efficiency?.lights,
+    ["🟢", "🟢", "🟢", "🟢", "🟢", "🟡", "🟡", "🟡", "⚫", "⚫"],
+    "at 80% approach progress, positions 6-8 should be yellow, not green",
+  );
+  assert.equal(
+    almostThere.efficiency?.recommendations?.upshiftRecommended,
+    false,
+    "still approaching - upshift should not be recommended yet",
+  );
+});
+
+test("shift light bar: blinks orange exactly at the upshift trigger point, blinks red past the zone", () => {
+  const processor = createTestProcessor();
+  const carOrdinal = 8002;
+
+  let baseline;
+  for (let i = 0; i < 5; i++) {
+    baseline = feedFrame(processor, 5, 30, carOrdinal, 4000 + i * 50, 1);
+  }
+  const finalShiftRPM = baseline!.efficiency?.finalShiftRPM ?? 0;
+  // +5rpm margin above the exact 0.98x boundary: the rpm value round-trips
+  // through a 32-bit float in the UDP packet, so testing the exact boundary
+  // is flaky - a small margin keeps this unambiguously past the threshold.
+  const optimalStart = finalShiftRPM * 0.98 + 5;
+  const optimalEnd =
+    optimalStart + DOWNSHIFT_MAX_RPM * LIGHT_BLINK_ZONE_WIDTH_RATIO;
+
+  const atTrigger = feedFrame(processor, 5, 30, carOrdinal, optimalStart, 0.5);
+  assert.equal(
+    atTrigger.efficiency?.recommendations?.upshiftRecommended,
+    true,
+    "expected this rpm (just above the 0.98x trigger) to already recommend upshift",
+  );
+
+  const orangeColors = sampleBlinkColors(processor, 5, 30, carOrdinal, optimalStart, 13);
+  assert.deepEqual(
+    orangeColors,
+    new Set(["🟠", "⚫"]),
+    "in the optimal window, the bar should blink between orange and off",
+  );
+
+  const redColors = sampleBlinkColors(processor, 5, 30, carOrdinal, optimalEnd + 200, 13);
+  assert.deepEqual(
+    redColors,
+    new Set(["🔴", "⚫"]),
+    "past the optimal window, the bar should blink between red and off",
+  );
+});
+
 test("CarProfileStore round-trips a saved profile through the CSV database", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "forza-profile-test-"));
   try {
@@ -507,8 +643,8 @@ test("CarProfileStore round-trips a saved profile through the CSV database", () 
           rpmMax: 7800,
           rpmAvg: 5100,
           rpmOptimal: 7150,
-          shiftWindowLow: 6800,
-          shiftWindowHigh: 7500,
+          observedRpmLow: 6800,
+          observedRpmHigh: 7500,
           wotSampleCount: 32,
           totalSampleCount: 80,
         },

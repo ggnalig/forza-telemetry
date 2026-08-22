@@ -11,15 +11,13 @@ export interface GearEfficiencyStats {
   rpmMax: number;
   rpmAvg: number;
   rpmOptimal: number;
-  shiftWindow: [number, number];
+  /** Descriptive p10-p90 spread of rpm actually observed in this gear - NOT
+   * a decision boundary. The real shift point is ShiftEngine.finalShiftRPM. */
+  observedRpmRange: [number, number];
 }
 
 export interface GearEfficiencyMap {
   [gear: number]: GearEfficiencyStats;
-}
-
-export interface ShiftRecommendations {
-  shiftRecommendation: string;
 }
 
 export interface GearEfficiencySummary {
@@ -28,8 +26,8 @@ export interface GearEfficiencySummary {
     rpmMax: number;
     rpmAvg: number;
     rpmOptimal: number;
-    shiftWindowLow: number;
-    shiftWindowHigh: number;
+    observedRpmLow: number;
+    observedRpmHigh: number;
     wotSampleCount: number;
     totalSampleCount: number;
   };
@@ -50,10 +48,7 @@ export class GearEfficiencyMapGenerator {
   private readonly MAX_SAMPLES = 100;
   private readonly STABILITY_RPM_RATIO = 0.04; // % of redline, replaces fixed 500rpm
 
-  update(frame: TelemetryFrame): {
-    efficiencyMap: GearEfficiencyMap;
-    shiftRecommendations: ShiftRecommendations;
-  } {
+  update(frame: TelemetryFrame): GearEfficiencyMap {
     const { gear, rpm, power, throttle, maxRpm } = frame;
     const windowMargin = maxRpm * this.WINDOW_MARGIN_RATIO;
 
@@ -63,18 +58,13 @@ export class GearEfficiencyMapGenerator {
         rpmMax: rpm,
         rpmAvg: rpm,
         rpmOptimal: rpm,
-        shiftWindow: [rpm - windowMargin, rpm + windowMargin],
+        observedRpmRange: [rpm - windowMargin, rpm + windowMargin],
       };
       this.totalSampleCounts[gear] = 1;
       this.wotSampleCounts[gear] = 0;
       this.efficiencyScoreByRpm[gear] = {};
       this.updateRpmSamples(gear, rpm, maxRpm);
-      return {
-        efficiencyMap: this.efficiencyMap,
-        shiftRecommendations: {
-          shiftRecommendation: "-",
-        },
-      };
+      return this.efficiencyMap;
     }
 
     const currentStats = this.efficiencyMap[gear];
@@ -122,17 +112,12 @@ export class GearEfficiencyMapGenerator {
           }
 
           currentStats.rpmOptimal = bestBucket + this.RPM_BUCKET_SIZE / 2;
-          currentStats.shiftWindow = this.calculatePercentileBasedWindow(gear);
+          currentStats.observedRpmRange = this.calculatePercentileBasedWindow(gear);
         }
       }
     }
 
-    const shiftRecommendations = this.calculateShiftRecommendations(gear, rpm);
-
-    return {
-      efficiencyMap: this.efficiencyMap,
-      shiftRecommendations,
-    };
+    return this.efficiencyMap;
   }
 
   private isStableRpmSample(rpm: number, gear: number, maxRpm: number): boolean {
@@ -143,37 +128,6 @@ export class GearEfficiencyMapGenerator {
     const avgRecent =
       recentSamples.reduce((a, b) => a + b, 0) / recentSamples.length;
     return Math.abs(rpm - avgRecent) < maxRpm * this.STABILITY_RPM_RATIO;
-  }
-
-  private calculateShiftRecommendations(
-    gear: number,
-    rpm: number,
-  ): ShiftRecommendations {
-    const stats = this.efficiencyMap[gear];
-    if (!stats || this.wotSampleCounts[gear] < this.MIN_SAMPLES) {
-      return { shiftRecommendation: "-" };
-    }
-
-    const [windowMin, windowMax] = stats.shiftWindow;
-    const windowSize = windowMax - windowMin;
-    const hysteresis = Math.max(50, windowSize * 0.03);
-
-    const upshiftThreshold = windowMax - hysteresis;
-    const downshiftThreshold = windowMin + hysteresis;
-
-    let shiftRecommendation = "";
-
-    if (rpm >= upshiftThreshold) {
-      shiftRecommendation = "upshift";
-    } else if (rpm <= downshiftThreshold) {
-      shiftRecommendation = "downshift";
-    } else {
-      shiftRecommendation = "no shift";
-    }
-
-    return {
-      shiftRecommendation,
-    };
   }
 
   private calculatePercentile(
@@ -227,8 +181,8 @@ export class GearEfficiencyMapGenerator {
   /**
    * Persisted shape is a per-gear summary of the derived stats only - the
    * internal per-bucket power histogram and raw rpm sample buffer are working
-   * sets used to *compute* rpmOptimal/shiftWindow, not the knowledge itself.
-   * They naturally rebuild from a few frames of new driving after import.
+   * sets used to *compute* rpmOptimal/observedRpmRange, not the knowledge
+   * itself. They naturally rebuild from a few frames of new driving after import.
    */
   exportState(): GearEfficiencySummary {
     const summary: GearEfficiencySummary = {};
@@ -240,8 +194,8 @@ export class GearEfficiencyMapGenerator {
         rpmMax: stats.rpmMax,
         rpmAvg: stats.rpmAvg,
         rpmOptimal: stats.rpmOptimal,
-        shiftWindowLow: stats.shiftWindow[0],
-        shiftWindowHigh: stats.shiftWindow[1],
+        observedRpmLow: stats.observedRpmRange[0],
+        observedRpmHigh: stats.observedRpmRange[1],
         wotSampleCount: this.wotSampleCounts[gear] ?? 0,
         totalSampleCount: this.totalSampleCounts[gear] ?? 0,
       };
@@ -264,7 +218,7 @@ export class GearEfficiencyMapGenerator {
         rpmMax: s.rpmMax,
         rpmAvg: s.rpmAvg,
         rpmOptimal: s.rpmOptimal,
-        shiftWindow: [s.shiftWindowLow, s.shiftWindowHigh],
+        observedRpmRange: [s.observedRpmLow, s.observedRpmHigh],
       };
       this.wotSampleCounts[gear] = s.wotSampleCount;
       this.totalSampleCounts[gear] = s.totalSampleCount;
