@@ -32,6 +32,14 @@ export class TelemetryProcessor {
    * telemetry yet - see handleCarChange's doc comment and tryVerifyPendingProfile. */
   private pendingProfile: CarProfile | null = null;
   private readonly PENDING_PROFILE_VERIFY_TOLERANCE = 0.08; // 8% relative gear-ratio difference
+  /** Persistence otherwise only happens on a car change (the outgoing car's
+   * profile) or a graceful process shutdown - a long single-car session that
+   * ends in a force-kill/crash would save nothing at all. This timer saves
+   * the active car's in-progress profile periodically too, so an ungraceful
+   * exit only ever loses the last few minutes of learning, not the whole
+   * session. */
+  private lastAutosaveAt: number = 0;
+  private static readonly AUTOSAVE_INTERVAL_MS = 30_000;
 
   constructor(debugMode = false, carProfileStore: CarProfileStore = new CarProfileStore()) {
     this.physicsValidator = new PhysicsValidator(debugMode);
@@ -159,6 +167,20 @@ export class TelemetryProcessor {
     }
   }
 
+  /** Saves the active car's in-progress profile every AUTOSAVE_INTERVAL_MS
+   * while telemetry is actively flowing - see the field doc comment above. */
+  private tryAutosave(): void {
+    if (!this.lastCarMeta) return;
+
+    const now = Date.now();
+    if (now - this.lastAutosaveAt < TelemetryProcessor.AUTOSAVE_INTERVAL_MS) {
+      return;
+    }
+
+    this.carProfileStore.save(this.exportCarProfile(this.lastCarMeta));
+    this.lastAutosaveAt = now;
+  }
+
   /**
    * Process and transform telemetry data
    * Validates data consistency and applies transformations
@@ -167,6 +189,7 @@ export class TelemetryProcessor {
     const telemetry = rawData.parsed;
 
     this.handleCarChange(telemetry);
+    this.tryAutosave();
 
     // Apply physics validation and normalization
     const physicsValidation =
