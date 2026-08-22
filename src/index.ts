@@ -59,9 +59,11 @@ class CarDashTelemetrySystem {
     });
 
     // Handle client connections
-    this.webSocketServer.getServer().on("connection", (socket: any) => {
+    this.webSocketServer.getServer().on("connection", () => {
       if (this.debugMode) {
-        console.log(`🔌 WebSocket client connected: ${socket.id}`);
+        console.log(
+          `🔌 WebSocket client connected (${this.webSocketServer.getConnectedClientsCount()} total)`,
+        );
       }
     });
   }
@@ -80,8 +82,6 @@ class CarDashTelemetrySystem {
 
       // Process/transform the data
       const processedData = this.telemetryProcessor.process(parsedData);
-      // console.dir(processedData.efficiency, { depth: null });
-      console.log(processedData.parsed.input.gear, "gear");
       // Broadcast to WebSocket clients
       this.webSocketServer.broadcastTelemetry(processedData);
     } catch (error) {

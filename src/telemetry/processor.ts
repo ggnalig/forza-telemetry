@@ -68,7 +68,13 @@ export class TelemetryProcessor {
     };
     const buildKey = computeBuildKey(meta);
 
-    if (this.lastBuildKey !== null && this.lastBuildKey !== buildKey) {
+    // Deliberately NOT gated on `this.lastBuildKey !== null`: the very first
+    // frame of a fresh process run must also try to load a saved profile
+    // (e.g. the app was restarted mid-session, or this is just "today's
+    // first drive" of a car you've driven before). The inner `lastCarMeta`
+    // check below already skips the save/reset on that first frame since
+    // there's nothing yet to save.
+    if (this.lastBuildKey !== buildKey) {
       if (this.lastCarMeta) {
         this.carProfileStore.save(this.exportCarProfile(this.lastCarMeta));
       }

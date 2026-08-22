@@ -383,6 +383,50 @@ test("a saved profile matching the composite build key but with a different obse
   );
 });
 
+test("a saved profile for the FIRST car driven in a fresh process is still loaded (not skipped on the very first frame)", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "forza-first-car-test-"));
+  try {
+    const ordinal = 9004;
+
+    // Session 1: learn something about this car, then persist (e.g. app shutdown).
+    const store1 = new CarProfileStore(tmpDir);
+    const processor1 = new TelemetryProcessor(false, store1);
+    const learnedResult = driveGearAtWOT(processor1, 5, 5000, 60, 40, 30, ordinal, 8000);
+    const learnedShiftRPM = learnedResult.efficiency?.finalShiftRPM ?? 0;
+    assert.ok(
+      Math.abs(learnedShiftRPM - 8000 * 0.92) > 50,
+      "sanity check: session 1 should have learned something other than plain bootstrap",
+    );
+    processor1.persistCurrentCarProfile();
+
+    // Session 2: a brand new TelemetryProcessor (simulating a fresh app
+    // restart) pointed at the same on-disk store, seeing this exact car for
+    // the very first time *this process* has run. lastBuildKey starts null -
+    // the saved profile must still be found and (after a few matching
+    // fresh samples resolve the layer-2 verification) warm-started from.
+    const store2 = new CarProfileStore(tmpDir);
+    const processor2 = new TelemetryProcessor(false, store2);
+    const resumedResult = driveGearAtWOT(processor2, 5, 5000, 60, 6, 30, ordinal, 8000);
+    const resumedShiftRPM = resumedResult.efficiency?.finalShiftRPM ?? 0;
+
+    // Not an exact match: the 6th frame (fed after the saved profile resolves
+    // and gets imported partway through this drive) adds one more real
+    // sample on top of it, nudging the estimate slightly - this checks it
+    // landed close to what was learned (and nowhere near a fresh bootstrap),
+    // not byte-for-byte equality.
+    assert.ok(
+      Math.abs(resumedShiftRPM - learnedShiftRPM) < learnedShiftRPM * 0.1,
+      `the first car driven in a fresh process should still warm-start close to its saved profile (~${learnedShiftRPM}), got ${resumedShiftRPM}`,
+    );
+    assert.ok(
+      Math.abs(resumedShiftRPM - 8000 * 0.92) > 50,
+      `should not have fallen back to a fresh bootstrap (~${8000 * 0.92}), got ${resumedShiftRPM}`,
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test("gearing safety clamp keeps rpm after shift above idle floor on a wide-ratio gearbox", () => {
   const processor = createTestProcessor();
   const carOrdinal = 9001;
