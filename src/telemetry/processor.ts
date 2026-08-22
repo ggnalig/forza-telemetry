@@ -261,6 +261,12 @@ export class TelemetryProcessor {
       lookupPower: (rpm: number) => this.enginePowerCurve.getPowerAt(rpm),
       powerCurveSampleCount: this.enginePowerCurve.getSampleCount(),
       peakPower: this.enginePowerCurve.getPeakPower(),
+      isColliding: transformedData.collision.smashableVelDiff > 0,
+      isOnRumbleStrip:
+        transformedData.wheels.onRumbleStrip.frontLeft === 1 ||
+        transformedData.wheels.onRumbleStrip.frontRight === 1 ||
+        transformedData.wheels.onRumbleStrip.rearLeft === 1 ||
+        transformedData.wheels.onRumbleStrip.rearRight === 1,
     });
 
     return {

@@ -36,6 +36,12 @@ export interface ShiftEngineInput {
   /** Highest power observed on the pooled curve, from EnginePowerCurve.getPeakPower(). */
   peakPower: number | null;
   brake: number;
+  /** True if a smashable-object collision just occurred - a shift recorded
+   * mid-impact doesn't represent a clean, trustworthy sample. */
+  isColliding: boolean;
+  /** True if any wheel is currently on a rumble strip - the edge-of-track
+   * bouncing this causes makes speed/handling readings unrepresentative. */
+  isOnRumbleStrip: boolean;
 }
 
 type DownshiftMode = "power" | "braking";
@@ -48,6 +54,18 @@ export class ShiftEngine {
   private lastGear: number = 0;
   private lastRPM: number = 0;
   private lastThrottle: number = 0;
+  /** rpmOptimal as it was while `lastGear` was active - NOT the current
+   * frame's rpmOptimal, which belongs to whatever gear is active now. Used
+   * to cross-check an outgoing shift against its OWN gear's physics-derived
+   * estimate (see recordOutcome). */
+  private lastRpmOptimal: number = 0;
+  /** Gear-change debounce: a candidate new gear must hold for
+   * GEAR_DEBOUNCE_FRAMES consecutive frames before it's treated as a real,
+   * committed shift - filters single-frame gear-read glitches that would
+   * otherwise get recorded as a (bogus) shift outcome. */
+  private candidateGear: number = 0;
+  private candidateGearFrames: number = 0;
+  private readonly GEAR_DEBOUNCE_FRAMES = 2;
   private blinkState: boolean = false;
   private blinkCounter: number = 0;
   private downshiftMode: DownshiftMode = "power";
@@ -61,6 +79,11 @@ export class ShiftEngine {
   // a raw sum of scores rather than a recency-aware one - and it would take a
   // full MAX_HISTORY more shifts in that gear to naturally evict the old bias.
   private readonly RECENCY_DECAY = 0.9;
+  // Anomaly gates applied in recordOutcome, before a sample ever reaches
+  // shiftHistory - see that method's doc comment for what each one catches.
+  private readonly OUTLIER_MIN_HISTORY_FOR_CHECK = 5;
+  private readonly OUTLIER_MAD_MULTIPLIER = 3.5;
+  private readonly CROSS_CHECK_TOLERANCE_RATIO = 0.25; // fraction of maxRpm
   private readonly WOT_THROTTLE_THRESHOLD = 0.9;
   private readonly MIN_CONFIDENT_SAMPLES = 5;
   private readonly MIN_POWER_CURVE_SAMPLES = 20;
@@ -108,6 +131,8 @@ export class ShiftEngine {
       lookupPower,
       powerCurveSampleCount,
       peakPower,
+      isColliding,
+      isOnRumbleStrip,
     } = input;
 
     if (gear < 1 || gear > MAX_SUPPORTED_GEAR) {
@@ -122,18 +147,50 @@ export class ShiftEngine {
       this.shiftHistory[gear] = [];
     }
 
-    if (gear !== this.lastGear && this.lastGear !== 0) {
-      // Only trust the outcome of a shift that happened under WOT - a lift-off
-      // or partial-throttle gear change doesn't tell us anything about the
-      // engine's real shift point.
-      if (this.lastThrottle >= this.WOT_THROTTLE_THRESHOLD) {
-        this.recordOutcome(this.lastGear, this.lastRPM, speed);
-      }
+    // A: debounce - a candidate gear must hold for GEAR_DEBOUNCE_FRAMES
+    // consecutive frames before it's treated as a committed shift. Until it
+    // does, lastGear/lastRPM/lastThrottle/lastRpmOptimal stay frozen at their
+    // pre-glitch values, so a 1-frame gear-read flicker never fires
+    // recordOutcome for either side of the flicker.
+    if (gear === this.candidateGear) {
+      this.candidateGearFrames++;
+    } else {
+      this.candidateGear = gear;
+      this.candidateGearFrames = 1;
     }
 
-    this.lastGear = gear;
-    this.lastRPM = rpm;
-    this.lastThrottle = throttle;
+    if (
+      this.candidateGearFrames >= this.GEAR_DEBOUNCE_FRAMES &&
+      gear !== this.lastGear
+    ) {
+      if (this.lastGear !== 0) {
+        // Only trust the outcome of a shift that happened under WOT - a
+        // lift-off or partial-throttle gear change doesn't tell us anything
+        // about the engine's real shift point.
+        if (this.lastThrottle >= this.WOT_THROTTLE_THRESHOLD) {
+          this.recordOutcome(
+            this.lastGear,
+            this.lastRPM,
+            speed,
+            idleRpm,
+            maxRpm,
+            this.lastRpmOptimal,
+            isColliding,
+            isOnRumbleStrip,
+          );
+        }
+      }
+      this.lastGear = gear;
+    }
+
+    // Only refresh these while we're stably in the committed gear - during a
+    // not-yet-debounced candidate, they keep reflecting the last trustworthy
+    // reading from the gear we're actually still (or again) in.
+    if (gear === this.lastGear) {
+      this.lastRPM = rpm;
+      this.lastThrottle = throttle;
+      this.lastRpmOptimal = rpmOptimal;
+    }
 
     const baselineRPM = this.determineBaselineShiftRPM(
       rpmOptimal,
@@ -549,11 +606,56 @@ export class ShiftEngine {
     return "hold";
   }
 
-  private recordOutcome(gear: number, rpm: number, endSpeed: number): void {
+  /**
+   * Records one WOT shift outcome for `gear`, gated by several anomaly
+   * checks so a bad sample never reaches shiftHistory in the first place
+   * (recency decay alone only fades bad-but-VALID data over time - it can't
+   * clean up data that shouldn't have been trusted at all):
+   *
+   * - E: sanity bound - rpm must fall inside the engine's real idle-to-max
+   *   range.
+   * - B: reject if a collision or rumble-strip moment coincided with the
+   *   shift - speed/handling aren't representative of a clean shift then.
+   * - D: cross-check against `rpmOptimalAtShift`, the outgoing gear's own
+   *   physics-derived estimate (from GearEfficiencyMapGenerator) - catches an
+   *   anomaly even before this gear has enough of its OWN history for C to
+   *   kick in.
+   * - C: reject if rpm is a statistical outlier (> OUTLIER_MAD_MULTIPLIER
+   *   median-absolute-deviations away) relative to this gear's own
+   *   previously-recorded outcomes.
+   */
+  private recordOutcome(
+    gear: number,
+    rpm: number,
+    endSpeed: number,
+    idleRpm: number,
+    maxRpm: number,
+    rpmOptimalAtShift: number,
+    isColliding: boolean,
+    isOnRumbleStrip: boolean,
+  ): void {
     if (gear < 1 || gear > MAX_SUPPORTED_GEAR) return;
+
+    // E: sanity bound
+    if (rpm < idleRpm || rpm > maxRpm) return;
 
     const speedGain = Math.max(0, endSpeed);
     if (speedGain <= 0) return;
+
+    // B: collision/rumble-strip guard
+    if (isColliding || isOnRumbleStrip) return;
+
+    // D: cross-check against the physics-grounded efficiency-map estimate,
+    // when one already exists for this gear.
+    if (
+      rpmOptimalAtShift > 0 &&
+      Math.abs(rpm - rpmOptimalAtShift) > maxRpm * this.CROSS_CHECK_TOLERANCE_RATIO
+    ) {
+      return;
+    }
+
+    // C: outlier vs. this gear's own recorded history
+    if (this.isRpmOutlier(gear, rpm)) return;
 
     const history = this.shiftHistory[gear];
     history.push({ rpm, score: speedGain, timestamp: Date.now() });
@@ -561,6 +663,35 @@ export class ShiftEngine {
     if (history.length > this.MAX_HISTORY) {
       history.shift();
     }
+  }
+
+  /**
+   * Median-absolute-deviation outlier check: true if `rpm` is more than
+   * OUTLIER_MAD_MULTIPLIER MADs away from the median of this gear's already-
+   * recorded shift rpms. Median/MAD (not mean/stddev) are used because
+   * they're themselves robust to the very outliers this is trying to catch.
+   * Skipped until there's enough history to make the comparison meaningful.
+   */
+  private isRpmOutlier(gear: number, rpm: number): boolean {
+    const history = this.shiftHistory[gear];
+    if (!history || history.length < this.OUTLIER_MIN_HISTORY_FOR_CHECK) {
+      return false;
+    }
+
+    const rpms = history.map((o) => o.rpm).sort((a, b) => a - b);
+    const median = rpms[Math.floor(rpms.length / 2)];
+    const deviations = rpms
+      .map((r) => Math.abs(r - median))
+      .sort((a, b) => a - b);
+    const mad = deviations[Math.floor(deviations.length / 2)];
+
+    if (mad === 0) {
+      // Every recorded outcome so far landed at the exact same rpm - fall
+      // back to a relative-difference guard instead of a zero-width band.
+      return Math.abs(rpm - median) > median * 0.15;
+    }
+
+    return Math.abs(rpm - median) > mad * this.OUTLIER_MAD_MULTIPLIER;
   }
 
   exportState(): ShiftHistory {
@@ -576,6 +707,9 @@ export class ShiftEngine {
     this.lastGear = 0;
     this.lastRPM = 0;
     this.lastThrottle = 0;
+    this.lastRpmOptimal = 0;
+    this.candidateGear = 0;
+    this.candidateGearFrames = 0;
     this.downshiftMode = "power";
   }
 }
