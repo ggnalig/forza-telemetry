@@ -53,6 +53,14 @@ export class ShiftEngine {
   private downshiftMode: DownshiftMode = "power";
   private readonly LIGHT_BAR_SIZE = 10;
   private readonly MAX_HISTORY = 50;
+  // Per-position weight decay applied in calculateLearnedRPM, oldest-first:
+  // the most recent outcome in a gear's history has weight 1, the one before
+  // it RECENCY_DECAY, the one before that RECENCY_DECAY^2, etc. Without this,
+  // a habitually-repeated suboptimal shift rpm can out-accumulate a genuinely
+  // better rpm that's only been tried a couple of times, purely because it's
+  // a raw sum of scores rather than a recency-aware one - and it would take a
+  // full MAX_HISTORY more shifts in that gear to naturally evict the old bias.
+  private readonly RECENCY_DECAY = 0.9;
   private readonly WOT_THROTTLE_THRESHOLD = 0.9;
   private readonly MIN_CONFIDENT_SAMPLES = 5;
   private readonly MIN_POWER_CURVE_SAMPLES = 20;
@@ -137,7 +145,12 @@ export class ShiftEngine {
       powerCurveSampleCount,
     );
     const learnedRPM = this.calculateLearnedRPM(gear);
-    const confidence = Math.min(1, sampleCount / 20);
+    // Confidence in the LEARNED value must scale with how much shift-outcome
+    // data actually backs it up - not `sampleCount` (that's the efficiency
+    // map's WOT sample count, an unrelated signal). Using the wrong count let
+    // a learnedRPM built from just one or two early outcomes carry full blend
+    // weight as soon as unrelated WOT samples piled up elsewhere.
+    const confidence = Math.min(1, this.shiftHistory[gear].length / 20);
     let finalShiftRPM = this.calculateFinalShiftRPM(
       baselineRPM,
       learnedRPM,
@@ -365,9 +378,12 @@ export class ShiftEngine {
     if (history.length === 0) return 0;
 
     const rpmBuckets: { [key: number]: number } = {};
-    history.forEach((outcome) => {
+    const lastIndex = history.length - 1;
+    history.forEach((outcome, index) => {
       const bucket = Math.floor(outcome.rpm / 100) * 100;
-      rpmBuckets[bucket] = (rpmBuckets[bucket] || 0) + outcome.score;
+      const positionsBack = lastIndex - index; // 0 = most recent outcome
+      const weight = Math.pow(this.RECENCY_DECAY, positionsBack);
+      rpmBuckets[bucket] = (rpmBuckets[bucket] || 0) + outcome.score * weight;
     });
 
     let bestRPM = 0;
