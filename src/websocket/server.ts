@@ -41,6 +41,7 @@ export class TelemetryWebSocketServer {
     return {
       parsed: data.parsed,
       timestamp: data.timestamp,
+      carInfo: data.carInfo,
       efficiency: data.efficiency,
       broadcastId: this.broadcastCount++,
     };

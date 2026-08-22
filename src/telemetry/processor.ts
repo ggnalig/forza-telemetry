@@ -17,6 +17,7 @@ import {
   CarMeta,
   computeBuildKey,
 } from "../services/car-profile-store";
+import { lookupCarInfo } from "../services/car-database";
 
 export class TelemetryProcessor {
   private physicsValidator: PhysicsValidator;
@@ -243,6 +244,7 @@ export class TelemetryProcessor {
       raw: rawData.raw,
       parsed: transformedData,
       timestamp: Date.now(),
+      carInfo: lookupCarInfo(transformedData.car.ordinal),
       efficiency: {
         map: efficiencyMap,
         recommendations: {

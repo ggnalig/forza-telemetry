@@ -176,6 +176,13 @@ export interface ProcessedTelemetryData {
   raw: Buffer;
   parsed: TelemetryData;
   timestamp: number;
+  carInfo: {
+    carId: number;
+    year: number;
+    make: string;
+    model: string;
+    displayName: string;
+  } | null;
   efficiency?: {
     map: {
       [gear: number]: {
