@@ -27,6 +27,10 @@ export class TelemetryProcessor {
   private carProfileStore: CarProfileStore;
   private lastBuildKey: string | null = null;
   private lastCarMeta: CarMeta | null = null;
+  /** A profile loaded from disk that hasn't been verified against fresh
+   * telemetry yet - see handleCarChange's doc comment and tryVerifyPendingProfile. */
+  private pendingProfile: CarProfile | null = null;
+  private readonly PENDING_PROFILE_VERIFY_TOLERANCE = 0.08; // 8% relative gear-ratio difference
 
   constructor(debugMode = false, carProfileStore: CarProfileStore = new CarProfileStore()) {
     this.physicsValidator = new PhysicsValidator(debugMode);
@@ -46,7 +50,11 @@ export class TelemetryProcessor {
    * would otherwise collide. `computeBuildKey` folds in numCylinders/maxRpm/
    * drivetrain too - see its doc comment for what this can and can't catch.
    * The outgoing build's state is saved to disk first so it can warm-start
-   * next time it's driven; the incoming build's saved profile (if any) is loaded.
+   * next time it's driven; the incoming build's saved profile (if any) is held
+   * as an unverified `pendingProfile` rather than imported immediately - see
+   * tryVerifyPendingProfile for why (the composite key can still match two
+   * builds that differ in ways it can't see, e.g. a bolt-on turbo or a manual
+   * gear ratio retune with the same engine/redline/drivetrain).
    */
   private handleCarChange(telemetry: TelemetryData): void {
     const meta: CarMeta = {
@@ -70,14 +78,51 @@ export class TelemetryProcessor {
       this.enginePowerCurve.reset();
       this.shiftEngine.reset();
 
-      const savedProfile = this.carProfileStore.load(meta);
-      if (savedProfile) {
-        this.importCarProfile(savedProfile);
-      }
+      this.pendingProfile = this.carProfileStore.load(meta);
     }
 
     this.lastBuildKey = buildKey;
     this.lastCarMeta = meta;
+  }
+
+  /**
+   * A saved profile matching the composite build key isn't necessarily the
+   * SAME build - two builds can share ordinal/numCylinders/maxRpm/drivetrain
+   * while differing in ways that key can't see (bolt-on power, a manual gear
+   * ratio retune). So a loaded profile is held as `pendingProfile` and only
+   * trusted once a fresh gear-ratio reading confirms it: as soon as any gear
+   * the pending profile has data for reaches enough freshly-observed samples
+   * this session, compare the two. Close enough -> import the full profile
+   * (power curve, other gears, shift history) for the usual warm-start. Too
+   * far off -> discard it and keep learning from scratch, so a mismatched
+   * profile never gets a chance to feed a wrong prediction. If the session
+   * ends before any comparison is possible, the candidate is simply dropped
+   * (same as a mismatch) rather than merged - the rarer edge case of losing
+   * an ultimately-still-valid profile is an accepted trade-off for keeping
+   * this logic simple.
+   */
+  private tryVerifyPendingProfile(gear: number): void {
+    if (!this.pendingProfile) return;
+
+    const pendingRatio = this.pendingProfile.gearRatios[gear];
+    if (!pendingRatio) return; // no saved data for this gear - wait for one that has some
+
+    const freshRatio = this.gearRatioEstimator.getRatio(gear);
+    if (freshRatio === null) return; // not enough fresh samples yet to compare
+
+    const relativeDiff =
+      Math.abs(freshRatio - pendingRatio.ratioMedian) / pendingRatio.ratioMedian;
+
+    if (relativeDiff <= this.PENDING_PROFILE_VERIFY_TOLERANCE) {
+      this.importCarProfile(this.pendingProfile);
+    } else {
+      console.warn(
+        `⚠️  Learned profile mismatch for this car (gear ${gear}: saved ratio ~${pendingRatio.ratioMedian.toFixed(1)}, observed ~${freshRatio.toFixed(1)}) - ` +
+          "looks like a different build under the same identity key. Discarding saved profile, learning fresh.",
+      );
+    }
+
+    this.pendingProfile = null; // resolved either way - imported or discarded
   }
 
   private exportCarProfile(meta: CarMeta): CarProfile {
@@ -143,6 +188,7 @@ export class TelemetryProcessor {
       transformedData.engine.rpm,
       transformedData.performance.speedKmh,
     );
+    this.tryVerifyPendingProfile(transformedData.input.gear);
 
     // Feed the pooled (gear-independent) WOT power curve used for the
     // cross-gear optimal shift point calculation.

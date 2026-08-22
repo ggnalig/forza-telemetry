@@ -311,23 +311,75 @@ test("two different builds sharing the same car.ordinal (e.g. an engine swap) do
   );
 
   // Switch BACK to build A's exact spec (same ordinal, same numCylinders/maxRpm).
-  // It should warm-start from build A's saved profile, not from build B's.
-  const backToAPacket = buildPacket({
-    rpm: 5000,
-    maxRpm: 8000,
-    idleRpm: 800,
-    carOrdinal: sharedOrdinal,
-    numCylinders: 6,
-    speedMs: 5000 / 30 / 3.6,
-    powerWatts: 200000,
-    gear: 5,
-    throttle: 0.5, // below WOT so this single frame doesn't itself teach the model anything
-  });
-  const backToAParsed = carDash331Parser.parse(backToAPacket);
-  const backToAResult = processor.process(backToAParsed!);
+  // The saved profile isn't trusted immediately - it's held as a "pending"
+  // candidate until a fresh gear-ratio reading confirms it, so this needs
+  // enough frames (matching build A's known ratio of 30 rpm/kmh) to resolve
+  // before the warm-start actually kicks in.
+  const backToAResult = driveGearAtWOT(
+    processor,
+    5,
+    5000,
+    50,
+    6,
+    30,
+    sharedOrdinal,
+    8000,
+  );
   assert.ok(
     Math.abs((backToAResult.efficiency?.finalShiftRPM ?? 0) - buildAShiftRPM) < 1,
     `switching back to build A's exact spec should restore its saved finalShiftRPM (~${buildAShiftRPM}), got ${backToAResult.efficiency?.finalShiftRPM} - build A and B must not have overwritten each other`,
+  );
+});
+
+test("a saved profile matching the composite build key but with a different observed gear ratio is discarded, not trusted", () => {
+  const processor = createTestProcessor();
+  const ordinal = 9002;
+
+  // Learn build A: gear 5 at ratio 30 rpm/kmh, moved well away from bootstrap.
+  const buildAResult = driveGearAtWOT(processor, 5, 5000, 60, 40, 30, ordinal, 8000);
+  const buildAShiftRPM = buildAResult.efficiency?.finalShiftRPM ?? 0;
+  assert.ok(
+    Math.abs(buildAShiftRPM - 8000 * 0.92) > 50,
+    "sanity check: build A should have learned something other than the plain bootstrap",
+  );
+
+  // Force a save+reset by switching to a different car entirely, then switch
+  // back to the exact same build key (ordinal/numCylinders/maxRpm/drivetrain) -
+  // but this time drive gear 5 at a very different ratio (45 instead of 30),
+  // as if a manual gear ratio retune happened without changing engine specs
+  // (exactly the gap the composite key alone can't see).
+  const otherCarPacket = buildPacket({
+    rpm: 3000,
+    maxRpm: 6000,
+    idleRpm: 800,
+    carOrdinal: 9999,
+    speedMs: 30,
+    powerWatts: 150000,
+    gear: 3,
+    throttle: 1,
+  });
+  processor.process(carDash331Parser.parse(otherCarPacket)!);
+
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.join(" "));
+  };
+
+  let mismatchResult;
+  try {
+    mismatchResult = driveGearAtWOT(processor, 5, 5000, 60, 6, 45, ordinal, 8000);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.ok(
+    warnings.some((w) => w.includes("mismatch")),
+    "expected a mismatch warning once the fresh gear-5 ratio (45) diverged from the saved one (30)",
+  );
+  assert.ok(
+    Math.abs((mismatchResult.efficiency?.finalShiftRPM ?? 0) - buildAShiftRPM) > 50,
+    `mismatched profile must not be imported - finalShiftRPM should not match build A's learned value (~${buildAShiftRPM}), got ${mismatchResult.efficiency?.finalShiftRPM}`,
   );
 });
 
