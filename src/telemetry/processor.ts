@@ -169,6 +169,7 @@ export class TelemetryProcessor {
         this.efficiencyMapGenerator.getSampleCount(transformedData.input.gear) ||
         0,
       throttle: transformedData.input.throttle,
+      brake: transformedData.input.brake,
       ratioToNextGear: this.gearRatioEstimator.getRatioToNextGear(
         transformedData.input.gear,
       ),
@@ -177,6 +178,7 @@ export class TelemetryProcessor {
       ),
       lookupPower: (rpm: number) => this.enginePowerCurve.getPowerAt(rpm),
       powerCurveSampleCount: this.enginePowerCurve.getSampleCount(),
+      peakPower: this.enginePowerCurve.getPeakPower(),
     });
 
     return {

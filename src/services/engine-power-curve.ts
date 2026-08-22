@@ -28,7 +28,16 @@ export class EnginePowerCurve {
 
   /**
    * Power at a given rpm, linearly interpolated between the nearest known
-   * buckets. Returns null if no data has been collected yet.
+   * buckets. Returns null if no data has been collected yet, OR if rpm falls
+   * outside the recorded range.
+   *
+   * Deliberately does NOT clamp/extrapolate to the nearest edge bucket: a
+   * crossover scan compares power(rpm) against power(rpm * someRatio) at many
+   * points, and if both ends of that comparison fall outside the recorded
+   * range they'd clamp to the SAME edge value and look like a "tie" - which
+   * findCrossoverShiftRPM reads as an immediate (bogus) crossover right at
+   * the first rpm it checks. Returning null instead lets callers skip those
+   * points, exactly like they already skip "no data at all" gaps.
    */
   getPowerAt(rpm: number): number | null {
     const buckets = Object.keys(this.powerByRpmBucket)
@@ -36,8 +45,9 @@ export class EnginePowerCurve {
       .sort((a, b) => a - b);
 
     if (buckets.length === 0) return null;
-    if (rpm <= buckets[0]) return this.powerByRpmBucket[buckets[0]];
-    if (rpm >= buckets[buckets.length - 1]) {
+    if (rpm < buckets[0] || rpm > buckets[buckets.length - 1]) return null;
+    if (rpm === buckets[0]) return this.powerByRpmBucket[buckets[0]];
+    if (rpm === buckets[buckets.length - 1]) {
       return this.powerByRpmBucket[buckets[buckets.length - 1]];
     }
 
@@ -54,6 +64,13 @@ export class EnginePowerCurve {
     }
 
     return null;
+  }
+
+  /** Highest power observed across the whole curve, or null if no data yet. */
+  getPeakPower(): number | null {
+    const values = Object.values(this.powerByRpmBucket);
+    if (values.length === 0) return null;
+    return Math.max(...values);
   }
 
   private bucketSize(maxRpm: number): number {

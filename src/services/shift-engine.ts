@@ -34,7 +34,12 @@ export interface ShiftEngineInput {
   lookupPower: (rpm: number) => number | null;
   /** Sample count backing lookupPower - gates whether the crossover method can be trusted yet. */
   powerCurveSampleCount: number;
+  /** Highest power observed on the pooled curve, from EnginePowerCurve.getPeakPower(). */
+  peakPower: number | null;
+  brake: number;
 }
+
+type DownshiftMode = "power" | "braking";
 
 // Gear byte in Forza telemetry: 0 = neutral, 1-10 = forward gears.
 export const MAX_SUPPORTED_GEAR = 10;
@@ -47,6 +52,7 @@ export class ShiftEngine {
   private shiftLightBuffer: string[] = [];
   private blinkState: boolean = false;
   private blinkCounter: number = 0;
+  private downshiftMode: DownshiftMode = "power";
   private readonly MAX_BUFFER_SIZE = 10;
   private readonly MAX_HISTORY = 50;
   private readonly WINDOW_MARGIN_RATIO = 0.08;
@@ -56,6 +62,20 @@ export class ShiftEngine {
   private readonly BOOTSTRAP_REDLINE_RATIO = 0.92;
   private readonly REDLINE_SAFETY_MARGIN_RATIO = 0.98;
   private readonly IDLE_SAFETY_MARGIN_RPM = 300;
+  // Hysteresis for power-driven vs. braking-driven downshift mode: entering
+  // and exiting braking mode use different throttle thresholds on purpose, so
+  // trail-braking/heel-toe (throttle hovering near one value) can't flap the
+  // mode back and forth every frame.
+  private readonly ENTER_BRAKING_THROTTLE = 0.15;
+  private readonly ENTER_BRAKING_BRAKE = 0.5;
+  private readonly EXIT_BRAKING_THROTTLE = 0.35;
+  // "Meat of the powerband" for the braking mode's target rpm: the lowest rpm
+  // where observed power reaches this fraction of the car's peak power.
+  private readonly BRAKING_BAND_POWER_RATIO = 0.7;
+  // Fallback (before enough power-curve data exists) is expressed relative to
+  // the idle-to-redline range, not raw maxRpm, so high-idle vehicles (trucks)
+  // aren't shortchanged.
+  private readonly BRAKING_BAND_FALLBACK_LOW_RATIO = 0.35;
 
   update(input: ShiftEngineInput): HybridShiftData {
     const {
@@ -67,10 +87,12 @@ export class ShiftEngine {
       rpmOptimal,
       sampleCount,
       throttle,
+      brake,
       ratioToNextGear,
       ratioToPreviousGear,
       lookupPower,
       powerCurveSampleCount,
+      peakPower,
     } = input;
 
     if (gear < 1 || gear > MAX_SUPPORTED_GEAR) {
@@ -128,9 +150,21 @@ export class ShiftEngine {
       finalShiftRPM * (1 + this.WINDOW_MARGIN_RATIO),
     ];
 
+    const mode = this.updateDownshiftMode(throttle, brake);
+    const downshiftRPM = this.determineDownshiftRPM(
+      mode,
+      maxRpm,
+      idleRpm,
+      ratioToPreviousGear,
+      lookupPower,
+      peakPower,
+      powerCurveSampleCount,
+    );
+
     const recommendation = this.calculateRecommendation(
       rpm,
       finalShiftRPM,
+      downshiftRPM,
       maxRpm,
       ratioToPreviousGear,
     );
@@ -218,6 +252,116 @@ export class ShiftEngine {
     }
 
     return redlineCap;
+  }
+
+  /**
+   * Downshifting happens in two physically different situations, so the
+   * criteria for "when" differ too:
+   *  - power-driven: throttle applied, gear is underpowered at this rpm -> use
+   *    the same force-curve crossover math as upshift, just viewed from the
+   *    lower gear's perspective.
+   *  - braking-driven (corner entry): no power is being applied, so a power
+   *    comparison is meaningless - instead aim to land in the productive part
+   *    of the powerband, ready to accelerate out.
+   * Hysteresis (different enter/exit throttle thresholds) prevents the mode
+   * from flapping every frame during trail-braking/heel-toe, where throttle
+   * hovers near the boundary instead of jumping cleanly between 0 and 1.
+   */
+  private updateDownshiftMode(throttle: number, brake: number): DownshiftMode {
+    if (this.downshiftMode === "braking") {
+      if (throttle >= this.EXIT_BRAKING_THROTTLE) {
+        this.downshiftMode = "power";
+      }
+    } else if (
+      throttle < this.ENTER_BRAKING_THROTTLE &&
+      brake > this.ENTER_BRAKING_BRAKE
+    ) {
+      this.downshiftMode = "braking";
+    }
+
+    return this.downshiftMode;
+  }
+
+  /**
+   * Rpm below which a downshift is recommended, or null if there isn't enough
+   * data yet to compute either mode's answer (caller falls back to a plain
+   * heuristic in that case).
+   */
+  private determineDownshiftRPM(
+    mode: DownshiftMode,
+    maxRpm: number,
+    idleRpm: number,
+    ratioToPreviousGear: number | null,
+    lookupPower: (rpm: number) => number | null,
+    peakPower: number | null,
+    powerCurveSampleCount: number,
+  ): number | null {
+    if (mode === "braking") {
+      return this.findBrakingTargetRpm(
+        lookupPower,
+        peakPower,
+        powerCurveSampleCount,
+        idleRpm,
+        maxRpm,
+      );
+    }
+
+    if (
+      ratioToPreviousGear === null ||
+      ratioToPreviousGear <= 1 ||
+      powerCurveSampleCount < this.MIN_POWER_CURVE_SAMPLES
+    ) {
+      return null;
+    }
+
+    // Reuse the upshift crossover math with the reciprocal ratio: this is
+    // exactly the crossover the lower gear (gear-1) would compute for its own
+    // upshift-to-this-gear, which is the same physical boundary that decides
+    // "should I downshift from here to gear-1".
+    const ratioToNextGearOfLowerGear = 1 / ratioToPreviousGear;
+    const crossoverInLowerGearUnits = this.findCrossoverShiftRPM(
+      lookupPower,
+      ratioToNextGearOfLowerGear,
+      idleRpm,
+      maxRpm,
+    );
+
+    if (crossoverInLowerGearUnits === null) return null;
+
+    return crossoverInLowerGearUnits / ratioToPreviousGear;
+  }
+
+  /**
+   * Lowest rpm where observed power reaches BRAKING_BAND_POWER_RATIO of the
+   * car's peak power - the bottom edge of "the meat of the powerband", used
+   * as the target to have reached by the time the driver gets back on
+   * throttle. Falls back to a proportional guess (relative to idle-to-redline
+   * range) until enough power-curve data exists.
+   */
+  private findBrakingTargetRpm(
+    lookupPower: (rpm: number) => number | null,
+    peakPower: number | null,
+    powerCurveSampleCount: number,
+    idleRpm: number,
+    maxRpm: number,
+  ): number {
+    if (
+      peakPower !== null &&
+      peakPower > 0 &&
+      powerCurveSampleCount >= this.MIN_POWER_CURVE_SAMPLES
+    ) {
+      const threshold = peakPower * this.BRAKING_BAND_POWER_RATIO;
+      const step = Math.max(50, maxRpm * 0.01);
+
+      for (let rpm = idleRpm; rpm <= maxRpm; rpm += step) {
+        const power = lookupPower(rpm);
+        if (power !== null && power >= threshold) {
+          return rpm;
+        }
+      }
+    }
+
+    return idleRpm + (maxRpm - idleRpm) * this.BRAKING_BAND_FALLBACK_LOW_RATIO;
   }
 
   private calculateLearnedRPM(gear: number): number {
@@ -372,6 +516,7 @@ export class ShiftEngine {
   private calculateRecommendation(
     rpm: number,
     finalShiftRPM: number,
+    downshiftRPM: number | null,
     maxRpm: number,
     ratioToPreviousGear: number | null,
   ): "upshift" | "downshift" | "hold" {
@@ -379,9 +524,14 @@ export class ShiftEngine {
       return "upshift";
     }
 
-    if (rpm <= finalShiftRPM * 0.8) {
+    // Prefer the mode-aware crossover/band answer; fall back to the old plain
+    // heuristic if there isn't enough data yet for either downshift mode.
+    const threshold = downshiftRPM ?? finalShiftRPM * 0.8;
+
+    if (rpm <= threshold) {
       // Gearing-aware guard: don't suggest a downshift that would immediately
-      // bounce the engine off the rev limiter in the lower gear.
+      // bounce the engine off the rev limiter in the lower gear. This applies
+      // regardless of which mode produced the threshold above.
       if (ratioToPreviousGear !== null && ratioToPreviousGear > 0) {
         const rpmAfterDownshift = rpm * ratioToPreviousGear;
         if (rpmAfterDownshift >= maxRpm * this.REDLINE_SAFETY_MARGIN_RATIO) {
@@ -421,5 +571,6 @@ export class ShiftEngine {
     this.lastGear = 0;
     this.lastRPM = 0;
     this.lastThrottle = 0;
+    this.downshiftMode = "power";
   }
 }

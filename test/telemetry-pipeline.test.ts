@@ -84,6 +84,7 @@ interface PacketFields {
   fuel?: number;
   lapNumber?: number;
   throttle?: number;
+  brake?: number;
   gear?: number;
 }
 
@@ -122,7 +123,7 @@ function buildPacket(fields: PacketFields = {}): Buffer {
     Math.round((fields.throttle ?? 1) * 255),
     OFFSETS.accel,
   );
-  buf.writeUInt8(0, OFFSETS.brake);
+  buf.writeUInt8(Math.round((fields.brake ?? 0) * 255), OFFSETS.brake);
   buf.writeUInt8(0, OFFSETS.clutch);
   buf.writeUInt8(0, OFFSETS.handbrake);
   buf.writeUInt8(fields.gear ?? 1, OFFSETS.gear);
@@ -332,6 +333,156 @@ test("downshift recommendation is suppressed if it would over-rev the lower gear
     result.efficiency?.recommendations?.downshiftRecommended,
     false,
     "downshift must not be recommended when it would bounce gear 1 off the rev limiter",
+  );
+});
+
+// --- Downshift: power-driven crossover, braking-driven band, and the
+// hysteresis that switches between them without flapping ---
+
+const DOWNSHIFT_IDLE_RPM = 800;
+const DOWNSHIFT_MAX_RPM = 8000;
+const DOWNSHIFT_PEAK_RPM = 3000;
+const DOWNSHIFT_PEAK_POWER = 300; // kW
+
+/** A "peaky" power curve: rises to a peak at 3000rpm, then falls off hard
+ * toward redline - like a narrow-powerband engine. Gives both downshift
+ * modes a real, non-trivial threshold to find instead of a flat curve. */
+function peakyPowerKw(rpm: number): number {
+  if (rpm <= DOWNSHIFT_PEAK_RPM) {
+    return (
+      (DOWNSHIFT_PEAK_POWER * (rpm - DOWNSHIFT_IDLE_RPM)) /
+      (DOWNSHIFT_PEAK_RPM - DOWNSHIFT_IDLE_RPM)
+    );
+  }
+  return (
+    DOWNSHIFT_PEAK_POWER -
+    (250 * (rpm - DOWNSHIFT_PEAK_RPM)) / (DOWNSHIFT_MAX_RPM - DOWNSHIFT_PEAK_RPM)
+  );
+}
+
+function feedFrame(
+  processor: TelemetryProcessor,
+  gear: number,
+  ratioRpmPerKmh: number,
+  carOrdinal: number,
+  rpm: number,
+  throttle: number,
+  brake = 0,
+) {
+  const packet = buildPacket({
+    rpm,
+    maxRpm: DOWNSHIFT_MAX_RPM,
+    idleRpm: DOWNSHIFT_IDLE_RPM,
+    carOrdinal,
+    speedMs: rpm / ratioRpmPerKmh / 3.6,
+    powerWatts: peakyPowerKw(rpm) * 1000,
+    gear,
+    throttle,
+    brake,
+  });
+  const parsed = carDash331Parser.parse(packet);
+  assert.ok(parsed, "expected packet to parse during test drive");
+  return processor.process(parsed!);
+}
+
+/**
+ * Gear 1 ratio 45 rpm/kmh, gear 2 ratio 30 rpm/kmh (ratioToPreviousGear(2) = 1.5).
+ * Sweeps gear 1 across the full rev range at WOT to build the pooled power
+ * curve + gear 1's ratio, then establishes gear 2's ratio at low throttle so
+ * it doesn't also seed gear 2's own per-gear efficiency baseline (which would
+ * otherwise interfere with the upshift/downshift comparison in these tests).
+ */
+function setupPeakyPowerCar(processor: TelemetryProcessor, carOrdinal: number) {
+  for (let rpm = DOWNSHIFT_IDLE_RPM; rpm <= DOWNSHIFT_MAX_RPM; rpm += 100) {
+    feedFrame(processor, 1, 45, carOrdinal, rpm, 1);
+  }
+  for (const rpm of [2000, 2100, 2200, 2300, 2400, 2500]) {
+    feedFrame(processor, 2, 30, carOrdinal, rpm, 0.3);
+  }
+}
+
+test("power-driven downshift recommends when a lower gear would give more power (crossover)", () => {
+  const processor = createTestProcessor();
+  const carOrdinal = 6001;
+  setupPeakyPowerCar(processor, carOrdinal);
+
+  // Below the crossover (~2600-2700rpm): gear 1 already makes more power here.
+  const belowCrossover = feedFrame(processor, 2, 30, carOrdinal, 1800, 1, 0);
+  assert.equal(
+    belowCrossover.efficiency?.recommendations?.downshiftRecommended,
+    true,
+    "well below the power-curve crossover, downshift to gear 1 should be recommended",
+  );
+
+  // Comfortably above the crossover: gear 2 is still ahead on the power curve.
+  const aboveCrossover = feedFrame(processor, 2, 30, carOrdinal, 5500, 1, 0);
+  assert.equal(
+    aboveCrossover.efficiency?.recommendations?.downshiftRecommended,
+    false,
+    "above the power-curve crossover, gear 2 is still favorable - no downshift",
+  );
+});
+
+test("braking-driven downshift targets the powerband, not the power-crossover point", () => {
+  const processor = createTestProcessor();
+  const carOrdinal = 6002;
+  setupPeakyPowerCar(processor, carOrdinal);
+
+  // Well below the 70%-of-peak-power band (~2300-2340rpm): should downshift
+  // to be ready to accelerate once back on throttle.
+  const belowBand = feedFrame(processor, 2, 30, carOrdinal, 1500, 0.05, 0.8);
+  assert.equal(
+    belowBand.efficiency?.recommendations?.downshiftRecommended,
+    true,
+    "below the braking-mode target band, downshift should be recommended",
+  );
+
+  // Above the band: already in (or past) the productive part of the powerband.
+  const aboveBand = feedFrame(processor, 2, 30, carOrdinal, 4000, 0.05, 0.8);
+  assert.equal(
+    aboveBand.efficiency?.recommendations?.downshiftRecommended,
+    false,
+    "above the braking-mode target band, no downshift needed",
+  );
+});
+
+test("downshift mode switching has hysteresis and doesn't flap during trail-braking", () => {
+  const processor = createTestProcessor();
+  const carOrdinal = 6003;
+  setupPeakyPowerCar(processor, carOrdinal);
+
+  // rpm=2450 sits between the two modes' thresholds (power-crossover ~2600-2700,
+  // braking-band-low ~2300-2340), so the two modes disagree here - perfect for
+  // proving which mode is actually active at each step.
+  const rpm = 2450;
+
+  const powerMode = feedFrame(processor, 2, 30, carOrdinal, rpm, 1, 0);
+  assert.equal(
+    powerMode.efficiency?.recommendations?.downshiftRecommended,
+    true,
+    "start in power mode: rpm 2450 is below the power-crossover, so downshift",
+  );
+
+  const enterBraking = feedFrame(processor, 2, 30, carOrdinal, rpm, 0.05, 0.8);
+  assert.equal(
+    enterBraking.efficiency?.recommendations?.downshiftRecommended,
+    false,
+    "throttle<0.15 & brake>0.5 enters braking mode: rpm 2450 is above its band-low, so hold",
+  );
+
+  const trailThrottleBlip = feedFrame(processor, 2, 30, carOrdinal, rpm, 0.25, 0);
+  assert.equal(
+    trailThrottleBlip.efficiency?.recommendations?.downshiftRecommended,
+    false,
+    "throttle 0.25 is above the enter-threshold but below the exit-threshold (0.35) - " +
+      "hysteresis should keep it in braking mode, not flap back to power mode",
+  );
+
+  const throttleRecovers = feedFrame(processor, 2, 30, carOrdinal, rpm, 0.4, 0);
+  assert.equal(
+    throttleRecovers.efficiency?.recommendations?.downshiftRecommended,
+    true,
+    "throttle >= 0.35 clears the exit threshold: back to power mode, downshift again",
   );
 });
 
