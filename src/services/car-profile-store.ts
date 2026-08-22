@@ -1,9 +1,23 @@
 // Persists learned per-car shift/gearing state as a small CSV "database" -
-// one file per table, keyed by Forza's `car.ordinal`, so switching back to a
-// car you've already driven warm-starts the model instead of relearning it
-// from scratch every session. CSV (not JSON) is deliberate: every file is
-// directly openable/plottable in a spreadsheet for inspecting or tuning the
-// learned model by hand.
+// one file per table, keyed by a composite "build key" (not just
+// `car.ordinal`), so switching back to a car you've already driven warm-starts
+// the model instead of relearning it from scratch every session. CSV (not
+// JSON) is deliberate: every file is directly openable/plottable in a
+// spreadsheet for inspecting or tuning the learned model by hand.
+//
+// Why not just `car.ordinal`: Forza reuses the same ordinal for every
+// instance of a given car model, so two owned copies of "the same car" with
+// different builds (engine swap, drivetrain conversion, cam upgrade shifting
+// the redline) would otherwise collide and corrupt each other's learned
+// profile. The composite key (ordinal + numCylinders + maxRpm + drivetrain)
+// catches the most structurally-different-engine cases. It deliberately does
+// NOT include performanceIndex/carClass - those shift with tire/aero/weight
+// changes that don't affect gearing or the power curve at all, and would
+// cause spurious "new car" resets. It also can't catch every build
+// difference (a turbo swap or a manual gear ratio retune with the same
+// engine/redline/drivetrain is invisible to this key) - see
+// audit-result/audit.md for the follow-up idea (comparing freshly-observed
+// gear ratios/power against the loaded profile) that would close that gap.
 //
 // Only derived summaries are persisted (medians, optimal rpm, power-per-bucket),
 // never the raw rolling sample buffers each service keeps in memory - those
@@ -35,6 +49,18 @@ export interface CarProfile {
   shiftHistory: ShiftHistory;
 }
 
+/**
+ * Identifies a specific build of a car, not just the model. Two owned copies
+ * of the same `car.ordinal` with a different engine (numCylinders), a
+ * cam/internals upgrade that shifted the redline (maxRpm), or a drivetrain
+ * conversion get distinct keys and therefore distinct learned profiles.
+ * `maxRpm` is rounded before joining so float noise can't split one build
+ * into two keys.
+ */
+export function computeBuildKey(meta: CarMeta): string {
+  return `${meta.carOrdinal}:${meta.numCylinders}:${Math.round(meta.maxRpm)}:${meta.drivetrain}`;
+}
+
 const CARS_FILE = "cars.csv";
 const GEAR_RATIOS_FILE = "gear_ratios.csv";
 const GEAR_EFFICIENCY_FILE = "gear_efficiency.csv";
@@ -42,6 +68,7 @@ const POWER_CURVE_FILE = "power_curve.csv";
 const SHIFT_HISTORY_FILE = "shift_history.csv";
 
 const CARS_HEADERS = [
+  "build_key",
   "car_ordinal",
   "car_class",
   "performance_index",
@@ -55,6 +82,7 @@ const CARS_HEADERS = [
 ];
 
 const GEAR_RATIOS_HEADERS = [
+  "build_key",
   "car_ordinal",
   "car_class",
   "gear",
@@ -63,6 +91,7 @@ const GEAR_RATIOS_HEADERS = [
 ];
 
 const GEAR_EFFICIENCY_HEADERS = [
+  "build_key",
   "car_ordinal",
   "car_class",
   "gear",
@@ -76,9 +105,16 @@ const GEAR_EFFICIENCY_HEADERS = [
   "total_sample_count",
 ];
 
-const POWER_CURVE_HEADERS = ["car_ordinal", "car_class", "rpm_bucket", "power_kw"];
+const POWER_CURVE_HEADERS = [
+  "build_key",
+  "car_ordinal",
+  "car_class",
+  "rpm_bucket",
+  "power_kw",
+];
 
 const SHIFT_HISTORY_HEADERS = [
+  "build_key",
   "car_ordinal",
   "car_class",
   "gear",
@@ -92,9 +128,10 @@ function round(value: number, decimals: number): number {
   return Math.round(value * factor) / factor;
 }
 
-/** Every field in this store is numeric or an ISO timestamp - no commas or
- * quotes ever appear in a value, so a hand-rolled CSV reader/writer is safe
- * and avoids pulling in a parsing dependency for a five-file hobby dataset. */
+/** Every field in this store is numeric, a string with no commas (the build
+ * key), or an ISO timestamp - no commas or quotes ever appear in a value, so
+ * a hand-rolled CSV reader/writer is safe and avoids pulling in a parsing
+ * dependency for a five-file hobby dataset. */
 function readCsvRows(filePath: string): string[][] {
   if (!fs.existsSync(filePath)) return [];
   const content = fs.readFileSync(filePath, "utf-8").trim();
@@ -124,37 +161,33 @@ export class CarProfileStore {
   }
 
   save(profile: CarProfile): void {
+    const buildKey = computeBuildKey(profile.meta);
     try {
-      this.saveCars(profile);
-      this.saveGearRatios(profile);
-      this.saveGearEfficiency(profile);
-      this.savePowerCurve(profile);
-      this.saveShiftHistory(profile);
+      this.saveCars(buildKey, profile);
+      this.saveGearRatios(buildKey, profile);
+      this.saveGearEfficiency(buildKey, profile);
+      this.savePowerCurve(buildKey, profile);
+      this.saveShiftHistory(buildKey, profile);
     } catch (error) {
-      console.error(
-        `⚠️  Failed to save car profile for ordinal ${profile.meta.carOrdinal}:`,
-        error,
-      );
+      console.error(`⚠️  Failed to save car profile for build ${buildKey}:`, error);
     }
   }
 
-  load(carOrdinal: number): CarProfile | null {
+  load(meta: CarMeta): CarProfile | null {
+    const buildKey = computeBuildKey(meta);
     try {
-      const meta = this.loadCarMeta(carOrdinal);
-      if (!meta) return null;
+      const savedMeta = this.loadCarMeta(buildKey);
+      if (!savedMeta) return null;
 
       return {
-        meta,
-        gearRatios: this.loadGearRatios(carOrdinal),
-        gearEfficiency: this.loadGearEfficiency(carOrdinal),
-        powerCurve: this.loadPowerCurve(carOrdinal, meta),
-        shiftHistory: this.loadShiftHistory(carOrdinal),
+        meta: savedMeta,
+        gearRatios: this.loadGearRatios(buildKey),
+        gearEfficiency: this.loadGearEfficiency(buildKey),
+        powerCurve: this.loadPowerCurve(buildKey),
+        shiftHistory: this.loadShiftHistory(buildKey),
       };
     } catch (error) {
-      console.error(
-        `⚠️  Failed to load car profile for ordinal ${carOrdinal}:`,
-        error,
-      );
+      console.error(`⚠️  Failed to load car profile for build ${buildKey}:`, error);
       return null;
     }
   }
@@ -163,31 +196,30 @@ export class CarProfileStore {
     return path.join(this.baseDir, fileName);
   }
 
-  /** Drops any existing rows for this car (column 0 is always car_ordinal) and appends the new ones. */
-  private replaceCarRows(
+  /** Drops any existing rows for this build (column 0 is always build_key) and appends the new ones. */
+  private replaceBuildRows(
     fileName: string,
     headers: string[],
-    carOrdinal: number,
+    buildKey: string,
     newRows: (string | number)[][],
   ): void {
     const filePath = this.filePath(fileName);
-    const keptRows = readCsvRows(filePath).filter(
-      (row) => Number(row[0]) !== carOrdinal,
-    );
+    const keptRows = readCsvRows(filePath).filter((row) => row[0] !== buildKey);
     writeCsvRows(filePath, headers, [...keptRows, ...newRows]);
   }
 
-  private loadCarRows(fileName: string, carOrdinal: number): string[][] {
+  private loadBuildRows(fileName: string, buildKey: string): string[][] {
     return readCsvRows(this.filePath(fileName)).filter(
-      (row) => Number(row[0]) === carOrdinal,
+      (row) => row[0] === buildKey,
     );
   }
 
   // ---- cars.csv ----
 
-  private saveCars(profile: CarProfile): void {
+  private saveCars(buildKey: string, profile: CarProfile): void {
     const { meta } = profile;
     const row = [
+      buildKey,
       meta.carOrdinal,
       meta.carClass,
       meta.performanceIndex,
@@ -199,53 +231,49 @@ export class CarProfileStore {
       profile.powerCurve.sampleCount,
       new Date().toISOString(),
     ];
-    this.replaceCarRows(CARS_FILE, CARS_HEADERS, meta.carOrdinal, [row]);
+    this.replaceBuildRows(CARS_FILE, CARS_HEADERS, buildKey, [row]);
   }
 
-  private loadCarMeta(carOrdinal: number): CarMeta | null {
-    const [row] = this.loadCarRows(CARS_FILE, carOrdinal);
+  private loadCarMeta(buildKey: string): CarMeta | null {
+    const [row] = this.loadBuildRows(CARS_FILE, buildKey);
     if (!row) return null;
 
     return {
-      carOrdinal: Number(row[0]),
-      carClass: Number(row[1]),
-      performanceIndex: Number(row[2]),
-      drivetrain: Number(row[3]),
-      numCylinders: Number(row[4]),
-      idleRpm: Number(row[5]),
-      maxRpm: Number(row[6]),
+      carOrdinal: Number(row[1]),
+      carClass: Number(row[2]),
+      performanceIndex: Number(row[3]),
+      drivetrain: Number(row[4]),
+      numCylinders: Number(row[5]),
+      idleRpm: Number(row[6]),
+      maxRpm: Number(row[7]),
     };
   }
 
-  private getTotalWotSamples(carOrdinal: number): number {
-    const [row] = this.loadCarRows(CARS_FILE, carOrdinal);
-    return row ? Number(row[8]) : 0;
+  private getTotalWotSamples(buildKey: string): number {
+    const [row] = this.loadBuildRows(CARS_FILE, buildKey);
+    return row ? Number(row[9]) : 0;
   }
 
   // ---- gear_ratios.csv ----
 
-  private saveGearRatios(profile: CarProfile): void {
+  private saveGearRatios(buildKey: string, profile: CarProfile): void {
     const rows = Object.entries(profile.gearRatios).map(([gear, summary]) => [
+      buildKey,
       profile.meta.carOrdinal,
       profile.meta.carClass,
       Number(gear),
       round(summary.ratioMedian, 3),
       summary.sampleCount,
     ]);
-    this.replaceCarRows(
-      GEAR_RATIOS_FILE,
-      GEAR_RATIOS_HEADERS,
-      profile.meta.carOrdinal,
-      rows,
-    );
+    this.replaceBuildRows(GEAR_RATIOS_FILE, GEAR_RATIOS_HEADERS, buildKey, rows);
   }
 
-  private loadGearRatios(carOrdinal: number): GearRatioSummary {
+  private loadGearRatios(buildKey: string): GearRatioSummary {
     const summary: GearRatioSummary = {};
-    for (const row of this.loadCarRows(GEAR_RATIOS_FILE, carOrdinal)) {
-      summary[Number(row[2])] = {
-        ratioMedian: Number(row[3]),
-        sampleCount: Number(row[4]),
+    for (const row of this.loadBuildRows(GEAR_RATIOS_FILE, buildKey)) {
+      summary[Number(row[3])] = {
+        ratioMedian: Number(row[4]),
+        sampleCount: Number(row[5]),
       };
     }
     return summary;
@@ -253,8 +281,9 @@ export class CarProfileStore {
 
   // ---- gear_efficiency.csv ----
 
-  private saveGearEfficiency(profile: CarProfile): void {
+  private saveGearEfficiency(buildKey: string, profile: CarProfile): void {
     const rows = Object.entries(profile.gearEfficiency).map(([gear, s]) => [
+      buildKey,
       profile.meta.carOrdinal,
       profile.meta.carClass,
       Number(gear),
@@ -267,26 +296,26 @@ export class CarProfileStore {
       s.wotSampleCount,
       s.totalSampleCount,
     ]);
-    this.replaceCarRows(
+    this.replaceBuildRows(
       GEAR_EFFICIENCY_FILE,
       GEAR_EFFICIENCY_HEADERS,
-      profile.meta.carOrdinal,
+      buildKey,
       rows,
     );
   }
 
-  private loadGearEfficiency(carOrdinal: number): GearEfficiencySummary {
+  private loadGearEfficiency(buildKey: string): GearEfficiencySummary {
     const summary: GearEfficiencySummary = {};
-    for (const row of this.loadCarRows(GEAR_EFFICIENCY_FILE, carOrdinal)) {
-      summary[Number(row[2])] = {
-        rpmMin: Number(row[3]),
-        rpmMax: Number(row[4]),
-        rpmAvg: Number(row[5]),
-        rpmOptimal: Number(row[6]),
-        observedRpmLow: Number(row[7]),
-        observedRpmHigh: Number(row[8]),
-        wotSampleCount: Number(row[9]),
-        totalSampleCount: Number(row[10]),
+    for (const row of this.loadBuildRows(GEAR_EFFICIENCY_FILE, buildKey)) {
+      summary[Number(row[3])] = {
+        rpmMin: Number(row[4]),
+        rpmMax: Number(row[5]),
+        rpmAvg: Number(row[6]),
+        rpmOptimal: Number(row[7]),
+        observedRpmLow: Number(row[8]),
+        observedRpmHigh: Number(row[9]),
+        wotSampleCount: Number(row[10]),
+        totalSampleCount: Number(row[11]),
       };
     }
     return summary;
@@ -294,45 +323,41 @@ export class CarProfileStore {
 
   // ---- power_curve.csv ----
 
-  private savePowerCurve(profile: CarProfile): void {
+  private savePowerCurve(buildKey: string, profile: CarProfile): void {
     const rows = Object.entries(profile.powerCurve.powerByRpmBucket).map(
       ([bucket, power]) => [
+        buildKey,
         profile.meta.carOrdinal,
         profile.meta.carClass,
         Number(bucket),
         round(power, 1),
       ],
     );
-    this.replaceCarRows(
-      POWER_CURVE_FILE,
-      POWER_CURVE_HEADERS,
-      profile.meta.carOrdinal,
-      rows,
-    );
+    this.replaceBuildRows(POWER_CURVE_FILE, POWER_CURVE_HEADERS, buildKey, rows);
   }
 
   /** sampleCount isn't per-bucket, so it's carried in cars.csv's total_wot_samples column. */
   private loadPowerCurve(
-    carOrdinal: number,
-    meta: CarMeta,
+    buildKey: string,
   ): ReturnType<EnginePowerCurve["exportState"]> {
     const powerByRpmBucket: { [rpmBucket: number]: number } = {};
-    for (const row of this.loadCarRows(POWER_CURVE_FILE, carOrdinal)) {
-      powerByRpmBucket[Number(row[2])] = Number(row[3]);
+    for (const row of this.loadBuildRows(POWER_CURVE_FILE, buildKey)) {
+      powerByRpmBucket[Number(row[3])] = Number(row[4]);
     }
     return {
       powerByRpmBucket,
-      sampleCount: this.getTotalWotSamples(meta.carOrdinal),
+      sampleCount: this.getTotalWotSamples(buildKey),
     };
   }
 
   // ---- shift_history.csv ----
 
-  private saveShiftHistory(profile: CarProfile): void {
+  private saveShiftHistory(buildKey: string, profile: CarProfile): void {
     const rows: (string | number)[][] = [];
     for (const [gear, outcomes] of Object.entries(profile.shiftHistory)) {
       for (const outcome of outcomes) {
         rows.push([
+          buildKey,
           profile.meta.carOrdinal,
           profile.meta.carClass,
           Number(gear),
@@ -342,23 +367,23 @@ export class CarProfileStore {
         ]);
       }
     }
-    this.replaceCarRows(
+    this.replaceBuildRows(
       SHIFT_HISTORY_FILE,
       SHIFT_HISTORY_HEADERS,
-      profile.meta.carOrdinal,
+      buildKey,
       rows,
     );
   }
 
-  private loadShiftHistory(carOrdinal: number): ShiftHistory {
+  private loadShiftHistory(buildKey: string): ShiftHistory {
     const history: ShiftHistory = {};
-    for (const row of this.loadCarRows(SHIFT_HISTORY_FILE, carOrdinal)) {
-      const gear = Number(row[2]);
+    for (const row of this.loadBuildRows(SHIFT_HISTORY_FILE, buildKey)) {
+      const gear = Number(row[3]);
       if (!history[gear]) history[gear] = [];
       history[gear].push({
-        rpm: Number(row[3]),
-        score: Number(row[4]),
-        timestamp: new Date(row[5]).getTime(),
+        rpm: Number(row[4]),
+        score: Number(row[5]),
+        timestamp: new Date(row[6]).getTime(),
       });
     }
     return history;

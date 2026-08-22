@@ -267,6 +267,70 @@ test("switching car.ordinal resets learned state to a fresh bootstrap baseline",
   );
 });
 
+test("two different builds sharing the same car.ordinal (e.g. an engine swap) don't share a learned profile", () => {
+  const processor = createTestProcessor();
+  const sharedOrdinal = 9001;
+
+  // Build A: stock, 6-cyl, 8000rpm redline. Drive gear 5 enough to move its
+  // shift point well away from bootstrap.
+  const buildAResult = driveGearAtWOT(
+    processor,
+    5,
+    5000,
+    60,
+    40,
+    30,
+    sharedOrdinal,
+    8000,
+  );
+  const buildAShiftRPM = buildAResult.efficiency?.finalShiftRPM ?? 0;
+  assert.ok(
+    Math.abs(buildAShiftRPM - 8000 * 0.92) > 50,
+    "sanity check: build A should have learned something other than the plain bootstrap",
+  );
+
+  // Build B: same car.ordinal, but an engine swap changed numCylinders and
+  // maxRpm. Should be treated as a completely different car, not a resume.
+  const buildBPacket = buildPacket({
+    rpm: 3000,
+    maxRpm: 9000,
+    idleRpm: 900,
+    carOrdinal: sharedOrdinal,
+    numCylinders: 8,
+    speedMs: 30,
+    powerWatts: 200000,
+    gear: 5,
+    throttle: 1,
+  });
+  const buildBParsed = carDash331Parser.parse(buildBPacket);
+  const buildBResult = processor.process(buildBParsed!);
+  const buildBExpectedBootstrap = 9000 * 0.92;
+  assert.ok(
+    Math.abs((buildBResult.efficiency?.finalShiftRPM ?? 0) - buildBExpectedBootstrap) < 1,
+    `build B (different engine, same ordinal) should start from its own fresh bootstrap (~${buildBExpectedBootstrap}), got ${buildBResult.efficiency?.finalShiftRPM}`,
+  );
+
+  // Switch BACK to build A's exact spec (same ordinal, same numCylinders/maxRpm).
+  // It should warm-start from build A's saved profile, not from build B's.
+  const backToAPacket = buildPacket({
+    rpm: 5000,
+    maxRpm: 8000,
+    idleRpm: 800,
+    carOrdinal: sharedOrdinal,
+    numCylinders: 6,
+    speedMs: 5000 / 30 / 3.6,
+    powerWatts: 200000,
+    gear: 5,
+    throttle: 0.5, // below WOT so this single frame doesn't itself teach the model anything
+  });
+  const backToAParsed = carDash331Parser.parse(backToAPacket);
+  const backToAResult = processor.process(backToAParsed!);
+  assert.ok(
+    Math.abs((backToAResult.efficiency?.finalShiftRPM ?? 0) - buildAShiftRPM) < 1,
+    `switching back to build A's exact spec should restore its saved finalShiftRPM (~${buildAShiftRPM}), got ${backToAResult.efficiency?.finalShiftRPM} - build A and B must not have overwritten each other`,
+  );
+});
+
 test("gearing safety clamp keeps rpm after shift above idle floor on a wide-ratio gearbox", () => {
   const processor = createTestProcessor();
   const carOrdinal = 9001;
@@ -654,25 +718,35 @@ test("CarProfileStore round-trips a saved profile through the CSV database", () 
     };
 
     store.save(profile);
-    const loaded = store.load(123);
+    const loaded = store.load(profile.meta);
 
     assert.deepEqual(loaded, {
       ...profile,
       gearRatios: { 1: { ratioMedian: 58.234, sampleCount: 30 } }, // rounded to 3 decimals on save
     });
-    assert.equal(store.load(999), null);
+    // A different build (different numCylinders) of the same ordinal should
+    // NOT match this saved profile - that's the whole point of the composite key.
+    assert.equal(
+      store.load({ ...profile.meta, numCylinders: 8 }),
+      null,
+      "a different build of the same car.ordinal must not match a saved profile for another build",
+    );
+    assert.equal(store.load({ ...profile.meta, carOrdinal: 999 }), null);
 
     // The whole point of CSV: every file should be a plain, spreadsheet-openable table.
     const carsCsv = fs.readFileSync(path.join(tmpDir, "cars.csv"), "utf-8");
-    assert.match(carsCsv, /^car_ordinal,car_class,performance_index/);
-    assert.match(carsCsv, /^123,5,700/m);
+    assert.match(carsCsv, /^build_key,car_ordinal,car_class,performance_index/);
+    assert.match(carsCsv, /^123:6:8000:1,123,5,700/m);
 
     const powerCurveCsv = fs.readFileSync(
       path.join(tmpDir, "power_curve.csv"),
       "utf-8",
     );
-    assert.match(powerCurveCsv, /^car_ordinal,car_class,rpm_bucket,power_kw/);
-    assert.match(powerCurveCsv, /^123,5,5000,250\.4/m);
+    assert.match(
+      powerCurveCsv,
+      /^build_key,car_ordinal,car_class,rpm_bucket,power_kw/,
+    );
+    assert.match(powerCurveCsv, /^123:6:8000:1,123,5,5000,250\.4/m);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

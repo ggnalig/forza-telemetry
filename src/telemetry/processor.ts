@@ -15,6 +15,7 @@ import {
   CarProfileStore,
   CarProfile,
   CarMeta,
+  computeBuildKey,
 } from "../services/car-profile-store";
 
 export class TelemetryProcessor {
@@ -24,7 +25,7 @@ export class TelemetryProcessor {
   private enginePowerCurve: EnginePowerCurve;
   private shiftEngine: ShiftEngine;
   private carProfileStore: CarProfileStore;
-  private lastCarOrdinal: number | null = null;
+  private lastBuildKey: string | null = null;
   private lastCarMeta: CarMeta | null = null;
 
   constructor(debugMode = false, carProfileStore: CarProfileStore = new CarProfileStore()) {
@@ -37,15 +38,29 @@ export class TelemetryProcessor {
   }
 
   /**
-   * Every car in Forza has its own gearing/power characteristics - learned
-   * state from a previous car must not bleed into predictions for a new one.
-   * The outgoing car's state is saved to disk first so it can warm-start next
-   * time it's driven; the incoming car's saved profile (if any) is loaded.
+   * Every car BUILD in Forza has its own gearing/power characteristics -
+   * learned state from a previous build must not bleed into predictions for
+   * a new one. `car.ordinal` alone isn't enough to key this: Forza reuses the
+   * same ordinal for every owned copy of a car model, so two builds of the
+   * same car (e.g. an engine swap or a cam upgrade that shifted the redline)
+   * would otherwise collide. `computeBuildKey` folds in numCylinders/maxRpm/
+   * drivetrain too - see its doc comment for what this can and can't catch.
+   * The outgoing build's state is saved to disk first so it can warm-start
+   * next time it's driven; the incoming build's saved profile (if any) is loaded.
    */
   private handleCarChange(telemetry: TelemetryData): void {
-    const carOrdinal = telemetry.car.ordinal;
+    const meta: CarMeta = {
+      carOrdinal: telemetry.car.ordinal,
+      carClass: telemetry.car.class,
+      performanceIndex: telemetry.car.performanceIndex,
+      drivetrain: telemetry.car.drivetrain,
+      numCylinders: telemetry.engine.cylinders,
+      idleRpm: telemetry.engine.idleRpm,
+      maxRpm: telemetry.engine.maxRpm,
+    };
+    const buildKey = computeBuildKey(meta);
 
-    if (this.lastCarOrdinal !== null && this.lastCarOrdinal !== carOrdinal) {
+    if (this.lastBuildKey !== null && this.lastBuildKey !== buildKey) {
       if (this.lastCarMeta) {
         this.carProfileStore.save(this.exportCarProfile(this.lastCarMeta));
       }
@@ -55,22 +70,14 @@ export class TelemetryProcessor {
       this.enginePowerCurve.reset();
       this.shiftEngine.reset();
 
-      const savedProfile = this.carProfileStore.load(carOrdinal);
+      const savedProfile = this.carProfileStore.load(meta);
       if (savedProfile) {
         this.importCarProfile(savedProfile);
       }
     }
 
-    this.lastCarOrdinal = carOrdinal;
-    this.lastCarMeta = {
-      carOrdinal,
-      carClass: telemetry.car.class,
-      performanceIndex: telemetry.car.performanceIndex,
-      drivetrain: telemetry.car.drivetrain,
-      numCylinders: telemetry.engine.cylinders,
-      idleRpm: telemetry.engine.idleRpm,
-      maxRpm: telemetry.engine.maxRpm,
-    };
+    this.lastBuildKey = buildKey;
+    this.lastCarMeta = meta;
   }
 
   private exportCarProfile(meta: CarMeta): CarProfile {
