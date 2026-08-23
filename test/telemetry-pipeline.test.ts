@@ -253,10 +253,11 @@ test("observedRpmCeiling resets when the car changes", () => {
   );
 });
 
-// --- Session recording: a session starts once isRaceOn is true, records
-// frames tagged with the current build key, and is finalized by the idle
-// timeout once frames stop arriving (see session-recorder.ts's doc comment
-// for why isRaceOn=0/lap.number can't be used symmetrically for the end). ---
+// --- Session recording: manually toggled via setRecordingEnabled (the
+// "Record" button's backing call - see session-recorder.ts's doc comment for
+// why isRaceOn/lap.number turned out unusable for automatic detection),
+// records frames tagged with the current build key while enabled, and is
+// finalized either by an explicit stop or the idle-timeout safety net. ---
 
 function driveSessionFrame(
   processor: TelemetryProcessor,
@@ -288,11 +289,44 @@ function buildKeyFor(carOrdinal: number): string {
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-test("a session starts on the first frame and records frames tagged with the current build key", () => {
+test("no session is recorded unless recording is explicitly enabled", () => {
+  const recorder = new SessionRecorder(testProfileDir, 100, 20);
+  const processor = createTestProcessor(recorder);
+  const carOrdinal = 4000;
+
+  driveSessionFrame(processor, carOrdinal, 4000);
+  driveSessionFrame(processor, carOrdinal, 4500);
+
+  assert.deepEqual(
+    recorder.listSessions(buildKeyFor(carOrdinal)),
+    [],
+    "frames must not be recorded until setRecordingEnabled(true) is called",
+  );
+});
+
+test("stopping recording immediately finalizes the session, without waiting for the idle timeout", () => {
+  const recorder = new SessionRecorder(testProfileDir, 100, 20);
+  const processor = createTestProcessor(recorder);
+  const carOrdinal = 4007;
+
+  recorder.setRecordingEnabled(true);
+  for (let i = 0; i < 12; i++) driveSessionFrame(processor, carOrdinal);
+  assert.equal(recorder.isRecording(), true);
+
+  recorder.setRecordingEnabled(false);
+
+  const [session] = recorder.listSessions(buildKeyFor(carOrdinal));
+  assert.equal(recorder.isRecording(), false);
+  assert.equal(session.status, "completed", "12 frames is enough to count as completed");
+  assert.ok(session.endedAt !== null, "must be finalized immediately, not left pending for the idle timer");
+});
+
+test("a session starts on the first frame once recording is enabled, and records frames tagged with the current build key", () => {
   const recorder = new SessionRecorder(testProfileDir, 100, 20);
   const processor = createTestProcessor(recorder);
   const carOrdinal = 4001;
 
+  recorder.setRecordingEnabled(true);
   driveSessionFrame(processor, carOrdinal, 4000);
   driveSessionFrame(processor, carOrdinal, 4500);
 
@@ -313,6 +347,7 @@ test("a session with enough frames is marked 'completed' once it goes idle", asy
   const processor = createTestProcessor(recorder);
   const carOrdinal = 4002;
 
+  recorder.setRecordingEnabled(true);
   for (let i = 0; i < 12; i++) {
     driveSessionFrame(processor, carOrdinal);
   }
@@ -330,6 +365,7 @@ test("a session with too few frames is marked 'aborted' once it goes idle", asyn
   const processor = createTestProcessor(recorder);
   const carOrdinal = 4003;
 
+  recorder.setRecordingEnabled(true);
   driveSessionFrame(processor, carOrdinal);
 
   await wait(200);
@@ -343,6 +379,7 @@ test("switching to a different build finalizes the old session before the new on
   const recorder = new SessionRecorder(testProfileDir, 100, 20);
   const processor = createTestProcessor(recorder);
 
+  recorder.setRecordingEnabled(true);
   driveSessionFrame(processor, 4004);
   driveSessionFrame(processor, 4004);
 
@@ -365,6 +402,7 @@ test("deleteSession removes a session and its frames", () => {
   const recorder = new SessionRecorder(testProfileDir, 100, 20);
   const processor = createTestProcessor(recorder);
 
+  recorder.setRecordingEnabled(true);
   driveSessionFrame(processor, 4006);
   const [session] = recorder.listSessions(buildKeyFor(4006));
   assert.ok(session);
@@ -476,6 +514,7 @@ test("analyzeByBuildKey aggregates observed WOT rpm overall and per gear across 
     return processor.process(parsed!);
   };
 
+  recorder.setRecordingEnabled(true);
   drive(2, 6000, 1); // WOT
   drive(2, 6500, 1); // WOT, new gear-2 max
   drive(2, 9000, 0.3); // NOT WOT - must be ignored

@@ -32,7 +32,7 @@ export class SessionApiServer {
     // Personal-tool CORS: the UI dev server runs on a different port
     // (Vite), so the browser treats this as cross-origin.
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
     if (req.method === "OPTIONS") {
@@ -53,6 +53,30 @@ export class SessionApiServer {
     query: URLSearchParams,
     res: http.ServerResponse,
   ): void {
+    // GET /recording - current on/off state + the in-progress session id (if
+    // any), so the UI's Record button can reflect reality on load/reconnect
+    // instead of assuming it starts off.
+    if (segments[0] === "recording" && !segments[1] && method === "GET") {
+      this.sendJson(res, 200, this.recorder.getStatus());
+      return;
+    }
+
+    // POST /recording/start | /recording/stop - the "Record" button itself.
+    // Manual on purpose: neither isRaceOn nor lap.number reliably tells a
+    // timed event apart from free-roam driving (confirmed in-game), so
+    // there's no telemetry-only way left to infer "record this" - see
+    // session-recorder.ts's file doc comment.
+    if (segments[0] === "recording" && segments[1] === "start" && method === "POST") {
+      this.recorder.setRecordingEnabled(true);
+      this.sendJson(res, 200, this.recorder.getStatus());
+      return;
+    }
+    if (segments[0] === "recording" && segments[1] === "stop" && method === "POST") {
+      this.recorder.setRecordingEnabled(false);
+      this.sendJson(res, 200, this.recorder.getStatus());
+      return;
+    }
+
     // GET /analysis?buildKey=X - aggregate RPM analysis across every
     // recorded session for a build (see SessionRecorder.analyzeByBuildKey).
     // Not nested under /sessions since it's a cross-session aggregate, not

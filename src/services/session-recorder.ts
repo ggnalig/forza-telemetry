@@ -14,32 +14,28 @@
 // inside the same hot path that also does UDP parsing + WS broadcast would
 // visibly stall live telemetry.
 //
-// Session start is gated on `isRaceOn === 1` alone. `lap.number` was
-// originally meant to tighten this (only start once a lap has actually begun
-// timing, not just "not in a menu"), but Fh6TelemetryParser.parse() computes
-// it as `rawLapNumber + 1` unconditionally (see parser.ts) - so the field can
-// never actually read 0 through this pipeline, and can't distinguish
-// "no lap yet" from "on lap 1". It's still recorded per-frame below (useful
-// for grouping frames by lap during replay/analysis), just not usable as a
-// session-boundary signal.
+// Session start/stop is a MANUAL, explicit toggle (see setRecordingEnabled) -
+// driven by a "Record" button in the UI, not any automatic telemetry-based
+// detection. This was tried first: gating on `isRaceOn === 1` (optionally
+// tightened by `lap.number`) turned out unworkable for two independent
+// reasons, both confirmed in-game by the user rather than assumed:
+//   1. `lap.number` can't distinguish "no lap yet" from "on lap 1" -
+//      Fh6TelemetryParser.parse() computes it as `rawLapNumber + 1`
+//      unconditionally (see parser.ts), so it never actually reads 0 through
+//      this pipeline. It's still recorded per-frame below (useful for
+//      grouping frames by lap during replay/analysis), just not usable as a
+//      session-boundary signal.
+//   2. `isRaceOn` alone can't tell a timed event apart from ordinary
+//      free-roam driving either - confirmed by the user testing both in FH6
+//      directly. With neither signal reliable, there's no telemetry-only way
+//      left to infer "the user wants this recorded" - it has to be told.
 //
-// NOTE: `isRaceOn` is known in general Forza telemetry practice to also read
-// 1 during ordinary free-roam driving, not just formal timed events, so this
-// gate is a hypothesis that still needs an in-game verification pass (record
-// a real timed event vs. free-roam and compare, see the session-recording
-// pivot plan) before being fully trusted. It isn't blocking this
-// implementation, since the gate degrades safely (worst case: some free-roam
-// driving gets recorded as a low-value "session" that's easy to delete).
-//
-// Session END can't symmetrically watch for `isRaceOn === 0`, though:
-// Fh6TelemetryParser.parse() already rejects isRaceOn=0 packets outright
-// (returns null before they ever reach TelemetryProcessor), since the rest
-// of the pipeline has no use for non-race frames. That means onFrame simply
-// stops being called at all once a timed event ends - there's no frame left
-// to observe the transition on. The actual end-of-session mechanism is an
-// idle timeout: a periodic timer finalizes any session that hasn't received
-// a frame in IDLE_TIMEOUT_MS, since Forza keeps sending Data Out packets at
-// its usual rate the whole time (just no longer ones the parser accepts).
+// The idle timeout is kept as a safety net (not the primary end mechanism
+// anymore): if "Record" is left on and the user walks away/crashes without
+// pressing "Stop", a session doesn't sit in 'recording' status forever - see
+// IDLE_TIMEOUT_MS below. It also clears the recording-enabled flag itself
+// when it fires, so a stale "still wants to record" state can't silently
+// resurrect a new session the next time frames happen to flow again.
 
 import { DatabaseSync } from "node:sqlite";
 import * as fs from "fs";
@@ -115,6 +111,9 @@ export class SessionRecorder {
   private readonly db: DatabaseSync;
   private activeSessionId: string | null = null;
   private activeBuildKey: string | null = null;
+  /** Set by the "Record" button (see setRecordingEnabled) - onFrame only
+   * starts/keeps a session while this is true. */
+  private recordingEnabled = false;
   private frameIndex = 0;
   private lastFrameAt = 0;
   private readonly idleCheckTimer: NodeJS.Timeout;
@@ -188,36 +187,52 @@ export class SessionRecorder {
       this.activeSessionId &&
       Date.now() - this.lastFrameAt > this.idleTimeoutMs
     ) {
+      this.recordingEnabled = false; // don't silently resume recording later
       this.finalizeActiveSession();
     }
   }
 
+  /** Turns recording on/off - the "Record" button's backing call. Turning it
+   * off immediately finalizes any in-progress session (no need to wait for
+   * another frame, which might not even come if the game is paused/in a
+   * menu). Turning it on doesn't start a session right away - there's no
+   * telemetry to key it off yet - it just arms onFrame to start one on the
+   * next processed frame. */
+  setRecordingEnabled(enabled: boolean): void {
+    this.recordingEnabled = enabled;
+    if (!enabled) {
+      this.finalizeActiveSession();
+    }
+  }
+
+  isRecording(): boolean {
+    return this.recordingEnabled;
+  }
+
+  getStatus(): { recording: boolean; activeSessionId: string | null } {
+    return { recording: this.recordingEnabled, activeSessionId: this.activeSessionId };
+  }
+
   /** Call from TelemetryProcessor.handleCarChange whenever the build key
    * changes - finalizes any in-progress session for the OLD build first, so
-   * a car/tune swap mid-drive never attributes frames to the wrong build. */
+   * a car/tune swap mid-drive never attributes frames to the wrong build.
+   * If recording is still enabled, onFrame naturally starts a fresh session
+   * for the new build on the very next frame. */
   onBuildChange(buildKey: string): void {
     if (this.activeSessionId && this.activeBuildKey !== buildKey) {
       this.finalizeActiveSession();
     }
   }
 
-  /** Call once per processed frame. Starts recording based on isRaceOn (see
-   * file doc comment for why lap.number can't tighten this further) and
-   * appends a frame row while a session is active; ending is normally
-   * driven by the idle timer, not this method (see file doc comment) - the
-   * `!isRaceOn` branch below is a no-op through the live pipeline today but
-   * kept as a correct, harmless fallback in case a caller ever does pass an
-   * isRaceOn=0 frame here directly. */
+  /** Call once per processed frame. Starts a session as soon as recording is
+   * enabled and none is active yet, and appends a frame row while one is -
+   * see setRecordingEnabled for how recording actually turns on/off (this
+   * method never does so on its own). */
   onFrame(telemetry: TelemetryData, buildKey: string): void {
     this.lastFrameAt = Date.now();
-    const isRaceOn = telemetry.isRaceOn === 1;
 
-    if (!this.activeSessionId) {
-      if (isRaceOn) {
-        this.startSession(buildKey, telemetry);
-      }
-    } else if (!isRaceOn) {
-      this.finalizeActiveSession();
+    if (this.recordingEnabled && !this.activeSessionId) {
+      this.startSession(buildKey, telemetry);
     }
 
     if (this.activeSessionId) {
