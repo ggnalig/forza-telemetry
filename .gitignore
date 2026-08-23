@@ -7,6 +7,7 @@ dist/
 build/
 *.tgz
 *.tar.gz
+*.tsbuildinfo
 
 # Logs
 *.log

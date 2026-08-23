@@ -180,6 +180,30 @@ test("parser decodes a valid 324-byte packet correctly", () => {
   assert.equal(parsed.lap.number, 3);
 });
 
+test("parser maps negative raw speed + gear 0 to the -1 Reverse sentinel, and reports speedKmh as a positive magnitude", () => {
+  const packet = buildPacket({ speedMs: -12, gear: 0 });
+  const result = fh6TelemetryParser.parse(packet);
+  assert.ok(result, "expected a valid packet to parse successfully");
+
+  const { parsed } = result!;
+  assert.equal(parsed.input.gear, -1);
+  assert.ok(Math.abs(parsed.performance.speedKmh - 12 * 3.6) < 0.01);
+});
+
+test("parser keeps gear 0 as true Neutral when speed is not negative", () => {
+  const packet = buildPacket({ speedMs: 0, gear: 0 });
+  const result = fh6TelemetryParser.parse(packet);
+  assert.ok(result, "expected a valid packet to parse successfully");
+  assert.equal(result!.parsed.input.gear, 0);
+});
+
+test("parser ignores tiny negative speed jitter at a stop (doesn't misreport Reverse)", () => {
+  const packet = buildPacket({ speedMs: -0.01, gear: 0 });
+  const result = fh6TelemetryParser.parse(packet);
+  assert.ok(result, "expected a valid packet to parse successfully");
+  assert.equal(result!.parsed.input.gear, 0);
+});
+
 test("computeBuildKey joins ordinal/numCylinders/maxRpm/drivetrain, rounding maxRpm", () => {
   assert.equal(
     computeBuildKey({
@@ -502,6 +526,30 @@ test("an active tune's RPM overrides are applied live, falling back to defaults"
     untunedResult.diagnostics.shiftLightPercents,
     new SettingsStore(testProfileDir).getGeneralSettings().shiftLightPercents,
   );
+});
+
+test("maxRpmPerGearOverride's key 0 is a combined N/R bucket - applies to both true Neutral and the -1 Reverse sentinel", () => {
+  const tuneStore = new GearboxTuneStore(testProfileDir);
+  const recorder = new SessionRecorder(testProfileDir, 100, 20);
+  const processor = new TelemetryProcessor(false, tuneStore, recorder, new SettingsStore(testProfileDir));
+  const carOrdinal = 5007;
+
+  const tune = tuneStore.createTune(carOrdinal, "N/R bucket test", { 1: 3.5 }, {
+    maxRpmOverride: 9000,
+    maxRpmPerGearOverride: { 0: 6000 },
+  });
+  tuneStore.setActiveTune(carOrdinal, tune.id);
+
+  // True Neutral: gear 0, not reversing (positive/zero speed).
+  const neutralPacket = buildPacket({ carOrdinal, gear: 0, speedMs: 0, rpm: 4000, maxRpm: 8000 });
+  const neutralResult = processor.process(fh6TelemetryParser.parse(neutralPacket)!);
+  assert.equal(neutralResult.diagnostics.effectiveMaxRpm, 6000);
+
+  // Reverse: raw gear byte is still 0, but negative speed flips it to the -1
+  // sentinel - the same N/R override bucket must still apply.
+  const reversePacket = buildPacket({ carOrdinal, gear: 0, speedMs: -10, rpm: 4000, maxRpm: 8000 });
+  const reverseResult = processor.process(fh6TelemetryParser.parse(reversePacket)!);
+  assert.equal(reverseResult.diagnostics.effectiveMaxRpm, 6000);
 });
 
 test("analyzeByBuildKey aggregates observed WOT rpm overall and per gear across sessions", () => {

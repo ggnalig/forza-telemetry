@@ -136,6 +136,10 @@ const FH6_DASH_SIZE = 324; // EXACT packet size per the official FH6 doc
 const RPM_MIN = 0; // RPM validation range
 const RPM_MAX = 15000;
 const SPEED_MAX_KMH = 500; // Speed validation range
+// Forza's raw speed goes negative while reversing - a tiny negative-float
+// jitter at a dead stop shouldn't be read as "reversing", so only treat it
+// as such past this threshold (m/s, well under walking pace).
+const REVERSE_SPEED_THRESHOLD_MS = 0.1;
 
 export class Fh6TelemetryParser {
   /**
@@ -352,11 +356,21 @@ export class Fh6TelemetryParser {
       const power = buffer.readFloatLE(FH6_DASH_OFFSETS.power) / 1000;
       const torque = buffer.readFloatLE(FH6_DASH_OFFSETS.torque);
 
-      // Validate speed and convert to km/h
-      if (isNaN(speed) || speed < 0) {
+      // Validate speed and convert to km/h. Forza's raw speed goes NEGATIVE
+      // while reversing - the "Gear" byte itself never distinguishes Neutral
+      // from Reverse (it reports 0 for both; confirmed by this being the
+      // only signed signal available for it). This used to be treated as a
+      // malformed packet and dropped entirely, which is why the UI would
+      // freeze on stale gear/rpm data (stuck showing "N") for as long as the
+      // car stayed in reverse - no new frames ever arrived. Keep the sign
+      // just long enough to detect reversing (see `isReversing` below, used
+      // for the gear field), then normalize to a plain magnitude here -
+      // every other consumer of speedKmh expects it to never be negative.
+      if (isNaN(speed)) {
         return null;
       }
-      const speedKmh = speed * 3.6;
+      const isReversing = speed < -REVERSE_SPEED_THRESHOLD_MS;
+      const speedKmh = Math.abs(speed) * 3.6;
       if (speedKmh > SPEED_MAX_KMH) {
         return null;
       }
@@ -404,8 +418,14 @@ export class Fh6TelemetryParser {
         Math.min(1, buffer.readUInt8(FH6_DASH_OFFSETS.handbrake) / 255),
       );
 
-      // Parse gear and steering (keep signed values as specified)
-      const gear = buffer.readUInt8(FH6_DASH_OFFSETS.gear);
+      // Parse gear and steering (keep signed values as specified). The raw
+      // gear byte is 0 for both Neutral and Reverse (it's a plain u8, no
+      // negative values possible from the game itself) - fold in
+      // `isReversing` (derived from speed's sign above) to tell them apart.
+      // -1 is a safe sentinel for Reverse since the game never sends it;
+      // true Neutral (0) and forward gears (1-10) pass through untouched.
+      const rawGear = buffer.readUInt8(FH6_DASH_OFFSETS.gear);
+      const gear = rawGear === 0 && isReversing ? -1 : rawGear;
       const steer = buffer.readInt8(FH6_DASH_OFFSETS.steer);
 
       // Parse AI assistance data (normalize s8 values)
