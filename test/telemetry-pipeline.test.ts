@@ -11,7 +11,10 @@ import * as path from "node:path";
 import { fh6TelemetryParser } from "../src/udp/parser";
 import { TelemetryProcessor } from "../src/telemetry/processor";
 import { computeBuildKey } from "../src/telemetry/car-meta";
-import { GearboxTuneStore } from "../src/services/gearbox-tune-store";
+import {
+  GearboxTuneStore,
+  DEFAULT_SHIFT_LIGHT_PERCENTS,
+} from "../src/services/gearbox-tune-store";
 import { SessionRecorder } from "../src/services/session-recorder";
 
 const FH6_DASH_SIZE = 324;
@@ -370,4 +373,127 @@ test("deleteSession removes a session and its frames", () => {
   assert.equal(deleted, true);
   assert.equal(recorder.getSession(session.id), null);
   assert.deepEqual(recorder.getFrames(session.id), []);
+});
+
+// --- GearboxTune manual RPM overrides: round-trip through the CSV store,
+// and actually applied live by TelemetryProcessor when the tune is active
+// (see computeEffectiveRpm) - mirrors the manual-correction escape hatch
+// SimHub offers for cars whose reported max RPM isn't trustworthy. ---
+
+test("GearboxTuneStore round-trips maxRpmOverride/maxRpmPerGearOverride/redlineOverride/shiftLightPercents", () => {
+  const store = new GearboxTuneStore(testProfileDir);
+  const tune = store.createTune(5001, "Test Tune", { 1: 3.5, 2: 2.1 }, {
+    maxRpmOverride: 9000,
+    maxRpmPerGearOverride: { 1: 8500 },
+    redlineOverride: 8800,
+    shiftLightPercents: { light1: 0.85, light2: 0.92, redline: 0.94 },
+  });
+
+  const loaded = store.getTune(tune.id);
+  assert.deepEqual(loaded, tune);
+  assert.equal(loaded?.maxRpmOverride, 9000);
+  assert.deepEqual(loaded?.maxRpmPerGearOverride, { 1: 8500 });
+  assert.equal(loaded?.redlineOverride, 8800);
+  assert.deepEqual(loaded?.shiftLightPercents, { light1: 0.85, light2: 0.92, redline: 0.94 });
+
+  // A tune with no overrides at all should round-trip with them all absent,
+  // not present-as-zero/present-as-empty-object.
+  const plain = store.createTune(5002, "Plain Tune", { 1: 3.0 });
+  const loadedPlain = store.getTune(plain.id);
+  assert.equal(loadedPlain?.maxRpmOverride, undefined);
+  assert.equal(loadedPlain?.maxRpmPerGearOverride, undefined);
+  assert.equal(loadedPlain?.redlineOverride, undefined);
+  assert.equal(loadedPlain?.shiftLightPercents, undefined);
+});
+
+test("updateTune only touches override fields actually present in the update", () => {
+  const store = new GearboxTuneStore(testProfileDir);
+  const tune = store.createTune(5003, "Test Tune", { 1: 3.5 }, {
+    maxRpmOverride: 9000,
+    redlineOverride: 8800,
+  });
+
+  const updated = store.updateTune(tune.id, { name: "Renamed" });
+  assert.equal(updated?.maxRpmOverride, 9000, "an update that doesn't mention maxRpmOverride must leave it untouched");
+  assert.equal(updated?.redlineOverride, 8800);
+  assert.equal(updated?.name, "Renamed");
+
+  const cleared = store.updateTune(tune.id, { maxRpmOverride: undefined });
+  assert.equal(cleared?.maxRpmOverride, undefined, "explicitly setting a field to undefined must clear it");
+  assert.equal(cleared?.redlineOverride, 8800, "fields not mentioned in this update must still be untouched");
+});
+
+test("an active tune's RPM overrides are applied live, falling back to defaults", () => {
+  const tuneStore = new GearboxTuneStore(testProfileDir);
+  const recorder = new SessionRecorder(testProfileDir, 100, 20);
+  const processor = new TelemetryProcessor(false, tuneStore, recorder);
+  const carOrdinal = 5004;
+
+  const tune = tuneStore.createTune(carOrdinal, "Overridden", { 1: 3.5 }, {
+    maxRpmOverride: 9000,
+    maxRpmPerGearOverride: { 3: 8500 },
+    redlineOverride: 8800,
+    shiftLightPercents: { light1: 0.85, light2: 0.92, redline: 0.94 },
+  });
+  tuneStore.setActiveTune(carOrdinal, tune.id);
+
+  const drive = (gear: number) => {
+    const packet = buildPacket({ carOrdinal, gear, rpm: 4000, maxRpm: 8000 });
+    const parsed = fh6TelemetryParser.parse(packet);
+    return processor.process(parsed!);
+  };
+
+  // Gear 2 has no per-gear override, so maxRpmOverride (9000) applies.
+  let result = drive(2);
+  assert.equal(result.diagnostics.effectiveMaxRpm, 9000);
+  assert.equal(result.diagnostics.effectiveRedline, 8800, "redlineOverride wins over effective max RPM");
+  assert.deepEqual(result.diagnostics.shiftLightPercents, { light1: 0.85, light2: 0.92, redline: 0.94 });
+
+  // Gear 3 has its own per-gear override (8500), which wins over maxRpmOverride.
+  result = drive(3);
+  assert.equal(result.diagnostics.effectiveMaxRpm, 8500);
+
+  // A car with no active tune falls back to the game's own maxRpm and the
+  // library-wide shift-light defaults.
+  const untunedResult = (() => {
+    const packet = buildPacket({ carOrdinal: 5005, gear: 2, rpm: 4000, maxRpm: 7500 });
+    return processor.process(fh6TelemetryParser.parse(packet)!);
+  })();
+  assert.equal(untunedResult.diagnostics.effectiveMaxRpm, 7500);
+  assert.equal(untunedResult.diagnostics.effectiveRedline, 7500);
+  assert.deepEqual(untunedResult.diagnostics.shiftLightPercents, DEFAULT_SHIFT_LIGHT_PERCENTS);
+});
+
+test("analyzeByBuildKey aggregates observed WOT rpm overall and per gear across sessions", () => {
+  const recorder = new SessionRecorder(testProfileDir, 100, 20);
+  const processor = createTestProcessor(recorder);
+  const carOrdinal = 5006;
+  const buildKey = buildKeyFor(carOrdinal);
+
+  const drive = (gear: number, rpm: number, throttle: number) => {
+    const packet = buildPacket({ carOrdinal, gear, rpm, throttle });
+    const parsed = fh6TelemetryParser.parse(packet);
+    return processor.process(parsed!);
+  };
+
+  drive(2, 6000, 1); // WOT
+  drive(2, 6500, 1); // WOT, new gear-2 max
+  drive(2, 9000, 0.3); // NOT WOT - must be ignored
+  drive(3, 7200, 1); // WOT, gear 3
+
+  const report = recorder.analyzeByBuildKey(buildKey);
+  assert.ok(report);
+  assert.equal(report?.carOrdinal, carOrdinal);
+  assert.equal(report?.sessionCount, 1);
+  assert.equal(report?.wotFrameCount, 3, "the partial-throttle frame must not count");
+  assert.equal(report?.observedMaxRpmOverall, 7200);
+  assert.deepEqual(report?.observedMaxRpmPerGear, { 2: 6500, 3: 7200 });
+  assert.equal(report?.suggestedShiftLightRpm["90%"], Math.round(7200 * 0.9));
+  assert.equal(report?.suggestedShiftLightRpm["96%"], Math.round(7200 * 0.96));
+
+  assert.equal(
+    recorder.analyzeByBuildKey("nonexistent:build:key:1"),
+    null,
+    "a build with no recorded sessions must return null, not an empty report",
+  );
 });

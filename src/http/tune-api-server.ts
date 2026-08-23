@@ -117,10 +117,20 @@ export class TuneApiServer {
     // PUT/DELETE /tunes/:id
     if (segments[1] && !segments[2]) {
       if (method === "PUT") {
-        const updated = this.store.updateTune(segments[1], {
+        // Only include a key if the request body actually sent it, so a PUT
+        // that doesn't mention e.g. maxRpmOverride leaves the stored value
+        // untouched rather than implicitly clearing it (see
+        // GearboxTuneStore.updateTune's `"key" in updates` checks).
+        const updates: Parameters<typeof this.store.updateTune>[1] = {
           name: body?.name,
           gearRatios: body?.gearRatios,
-        });
+        };
+        if (body && "maxRpmOverride" in body) updates.maxRpmOverride = body.maxRpmOverride;
+        if (body && "maxRpmPerGearOverride" in body) updates.maxRpmPerGearOverride = body.maxRpmPerGearOverride;
+        if (body && "redlineOverride" in body) updates.redlineOverride = body.redlineOverride;
+        if (body && "shiftLightPercents" in body) updates.shiftLightPercents = body.shiftLightPercents;
+
+        const updated = this.store.updateTune(segments[1], updates);
         if (!updated) {
           this.sendJson(res, 404, { error: "Tune not found" });
           return;
@@ -153,6 +163,12 @@ export class TuneApiServer {
           Number(body.carOrdinal),
           String(body.name),
           body.gearRatios,
+          {
+            maxRpmOverride: body.maxRpmOverride,
+            maxRpmPerGearOverride: body.maxRpmPerGearOverride,
+            redlineOverride: body.redlineOverride,
+            shiftLightPercents: body.shiftLightPercents,
+          },
         );
         this.sendJson(res, 201, { tune });
         return;

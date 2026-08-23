@@ -53,6 +53,25 @@ export class SessionApiServer {
     query: URLSearchParams,
     res: http.ServerResponse,
   ): void {
+    // GET /analysis?buildKey=X - aggregate RPM analysis across every
+    // recorded session for a build (see SessionRecorder.analyzeByBuildKey).
+    // Not nested under /sessions since it's a cross-session aggregate, not
+    // a single session resource.
+    if (segments[0] === "analysis" && method === "GET") {
+      const buildKey = query.get("buildKey");
+      if (!buildKey) {
+        this.sendJson(res, 400, { error: "buildKey query param is required" });
+        return;
+      }
+      const report = this.recorder.analyzeByBuildKey(buildKey);
+      if (!report) {
+        this.sendJson(res, 404, { error: "No sessions found for this build" });
+        return;
+      }
+      this.sendJson(res, 200, { report });
+      return;
+    }
+
     if (segments[0] !== "sessions") {
       this.sendJson(res, 404, { error: "Not found" });
       return;

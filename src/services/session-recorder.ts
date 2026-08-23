@@ -79,6 +79,38 @@ export interface SessionFrame {
   brake: number;
 }
 
+/**
+ * Descriptive analysis derived from recorded sessions for one build -
+ * exported as raw information a human (or an AI model, per the export
+ * feature's intent) can use to decide what to manually enter as a
+ * GearboxTune override (max RPM, per-gear max RPM, redline, shift-light
+ * percentages). Deliberately NOT a recommendation engine: every number here
+ * is a plain observed-maximum or a fixed-percentage calculation, nothing
+ * learned or predicted - that predictive approach is exactly what this
+ * project moved away from (see the session-recording pivot).
+ */
+export interface RpmAnalysisReport {
+  buildKey: string;
+  carOrdinal: number;
+  sessionCount: number;
+  totalFramesAnalyzed: number;
+  /** How many of those frames were at wide-open throttle - the only ones
+   * trusted for "what's the real rev ceiling" purposes. */
+  wotFrameCount: number;
+  /** Highest rpm seen at WOT across every gear and every session - the same
+   * quantity RpmCeilingTracker converges to live, computed here after the
+   * fact from recorded data instead. */
+  observedMaxRpmOverall: number;
+  /** Highest rpm seen at WOT, broken down per gear - only gears actually
+   * driven at WOT appear here. */
+  observedMaxRpmPerGear: Record<number, number>;
+  /** observedMaxRpmOverall x each of a few common percentages (SimHub's own
+   * 90/95/96% defaults) - reference points only, not a recommendation of
+   * which one is "correct" for this car. */
+  suggestedShiftLightRpm: Record<string, number>;
+  generatedAt: string;
+}
+
 export class SessionRecorder {
   private readonly db: DatabaseSync;
   private activeSessionId: string | null = null;
@@ -294,6 +326,62 @@ export class SessionRecorder {
           .prepare("SELECT * FROM frames WHERE session_id = ? ORDER BY frame_index")
           .all(id);
     return rows.map((row) => this.hydrateFrame(row));
+  }
+
+  /** Same WOT threshold RpmCeilingTracker/EnginePowerCurve historically used
+   * - a frame below this throttle isn't a genuine full-power pull, so it
+   * isn't representative of the engine's real rev ceiling. */
+  private static readonly ANALYSIS_WOT_THROTTLE_THRESHOLD = 0.9;
+  private static readonly ANALYSIS_SHIFT_LIGHT_PRESETS = [0.9, 0.95, 0.96];
+
+  /** Aggregates every recorded session for one build into a descriptive RPM
+   * report - see RpmAnalysisReport's doc comment for what this is (and
+   * deliberately isn't). Returns null if no sessions exist for this build. */
+  analyzeByBuildKey(buildKey: string): RpmAnalysisReport | null {
+    const sessions = this.listSessions(buildKey);
+    if (sessions.length === 0) return null;
+
+    let observedMaxRpmOverall = 0;
+    const observedMaxRpmPerGear: Record<number, number> = {};
+    let totalFramesAnalyzed = 0;
+    let wotFrameCount = 0;
+
+    for (const session of sessions) {
+      const frames = this.getFrames(session.id);
+      totalFramesAnalyzed += frames.length;
+
+      for (const frame of frames) {
+        if (frame.throttle < SessionRecorder.ANALYSIS_WOT_THROTTLE_THRESHOLD) continue;
+        wotFrameCount++;
+
+        if (frame.rpm > observedMaxRpmOverall) {
+          observedMaxRpmOverall = frame.rpm;
+        }
+        const currentGearMax = observedMaxRpmPerGear[frame.gear] ?? 0;
+        if (frame.rpm > currentGearMax) {
+          observedMaxRpmPerGear[frame.gear] = frame.rpm;
+        }
+      }
+    }
+
+    const suggestedShiftLightRpm: Record<string, number> = {};
+    for (const percent of SessionRecorder.ANALYSIS_SHIFT_LIGHT_PRESETS) {
+      suggestedShiftLightRpm[`${Math.round(percent * 100)}%`] = Math.round(
+        observedMaxRpmOverall * percent,
+      );
+    }
+
+    return {
+      buildKey,
+      carOrdinal: sessions[0].carOrdinal,
+      sessionCount: sessions.length,
+      totalFramesAnalyzed,
+      wotFrameCount,
+      observedMaxRpmOverall,
+      observedMaxRpmPerGear,
+      suggestedShiftLightRpm,
+      generatedAt: new Date().toISOString(),
+    };
   }
 
   deleteSession(id: string): boolean {

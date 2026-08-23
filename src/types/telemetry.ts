@@ -2,6 +2,8 @@
 // All offsets and field types match support.forza.net's FH6 Data Out spec
 // FULL implementation with extended data as per specification
 
+import { GearboxTune, ShiftLightPercents } from "../services/gearbox-tune-store";
+
 export interface TelemetryData {
   // Core race state
   isRaceOn: number;
@@ -186,19 +188,19 @@ export interface ProcessedTelemetryData {
   // The manually-entered GearboxTune active for this car, if any - see
   // src/services/gearbox-tune-store.ts. Null means no tune has been
   // selected for this car.
-  activeTune: {
-    id: string;
-    carOrdinal: number;
-    name: string;
-    gearRatios: Record<number, number>;
-    createdAt: string;
-    updatedAt: string;
-  } | null;
+  activeTune: GearboxTune | null;
   diagnostics: {
     // Highest rpm ever observed at WOT for this car build - see
     // RpmCeilingTracker. A passive info stat for cross-checking engine.maxRpm
     // against the actual empirically-observed rev limiter; not fed back into
     // any active correction.
     observedRpmCeiling: number;
+    // What the gauge should actually use - engine.maxRpm/itself unless the
+    // active tune overrides them (see TelemetryProcessor.computeEffectiveRpm).
+    effectiveMaxRpm: number;
+    effectiveRedline: number;
+    // Active tune's thresholds, or DEFAULT_SHIFT_LIGHT_PERCENTS - always
+    // present so the UI never needs its own copy of the defaults.
+    shiftLightPercents: ShiftLightPercents;
   };
 }

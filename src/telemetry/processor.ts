@@ -9,7 +9,12 @@ import {
 import { PhysicsValidator } from "./physics-validator";
 import { CarMeta, computeBuildKey } from "./car-meta";
 import { lookupCarInfo } from "../services/car-database";
-import { GearboxTuneStore, GearboxTune } from "../services/gearbox-tune-store";
+import {
+  GearboxTuneStore,
+  GearboxTune,
+  ShiftLightPercents,
+  DEFAULT_SHIFT_LIGHT_PERCENTS,
+} from "../services/gearbox-tune-store";
 import { RpmCeilingTracker } from "../services/rpm-ceiling-tracker";
 import { SessionRecorder } from "../services/session-recorder";
 
@@ -86,6 +91,33 @@ export class TelemetryProcessor {
   }
 
   /**
+   * Resolves what the gauge should actually show for this frame, applying
+   * the active tune's manual RPM corrections (if any) over the game's own
+   * reported values - the same "let the user manually fix a value the game
+   * gets wrong for this car" escape hatch SimHub offers (see the SimHub
+   * comparison research). These are plain user-entered numbers, never
+   * anything derived/learned:
+   *  - maxRpm: maxRpmPerGearOverride[gear] takes precedence over
+   *    maxRpmOverride, which takes precedence over engine.maxRpm.
+   *  - redline: redlineOverride if set, otherwise equal to the effective
+   *    maxRpm above (matches SimHub's "redline = maxRpm" baseline).
+   *  - shiftLightPercents: the tune's own if set, otherwise
+   *    DEFAULT_SHIFT_LIGHT_PERCENTS (SimHub's 90/95/96% defaults).
+   */
+  private computeEffectiveRpm(
+    telemetry: TelemetryData,
+  ): { maxRpm: number; redline: number; shiftLightPercents: ShiftLightPercents } {
+    const tune = this.activeTune;
+    const maxRpm =
+      tune?.maxRpmPerGearOverride?.[telemetry.input.gear] ??
+      tune?.maxRpmOverride ??
+      telemetry.engine.maxRpm;
+    const redline = tune?.redlineOverride ?? maxRpm;
+    const shiftLightPercents = tune?.shiftLightPercents ?? DEFAULT_SHIFT_LIGHT_PERCENTS;
+    return { maxRpm, redline, shiftLightPercents };
+  }
+
+  /**
    * Process and transform telemetry data
    * Validates data consistency and applies transformations
    */
@@ -137,6 +169,8 @@ export class TelemetryProcessor {
     // on a change.
     this.sessionRecorder.onFrame(transformedData, this.lastBuildKey!);
 
+    const effectiveRpm = this.computeEffectiveRpm(transformedData);
+
     return {
       raw: rawData.raw,
       parsed: transformedData,
@@ -145,6 +179,9 @@ export class TelemetryProcessor {
       activeTune: this.activeTune,
       diagnostics: {
         observedRpmCeiling,
+        effectiveMaxRpm: effectiveRpm.maxRpm,
+        effectiveRedline: effectiveRpm.redline,
+        shiftLightPercents: effectiveRpm.shiftLightPercents,
       },
     };
   }
