@@ -3,9 +3,9 @@
 // real rev limiter no matter what any static field claims, so this
 // converges to the true mechanical redline from actual driving - useful for
 // cross-checking `engine.maxRpm` against reality rather than trusting it
-// blindly (see the redline-accuracy investigation this was built for).
-// Deliberately NOT persisted to CarProfileStore: this is a diagnostic value
-// for validating maxRpm, not a piece of the learned shift model.
+// blindly (see the redline-accuracy investigation this was built for). A
+// passive info stat surfaced to the UI - no active correction logic reads
+// it back.
 export class RpmCeilingTracker {
   private ceiling = 0;
   private readonly WOT_THROTTLE_THRESHOLD = 0.9;

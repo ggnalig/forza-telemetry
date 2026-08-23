@@ -1,18 +1,14 @@
-// Persists user-entered, exact per-gear ratios as named "tunes" - the
-// manual alternative to GearRatioEstimator's statistical estimate. Exists
+// Persists user-entered, exact per-gear ratios as named "tunes". Exists
 // because Forza's own tuning menu shows exact per-gear ratios (and final
-// drive) for tunable cars, but never exposes them over UDP telemetry, and
-// GearRatioEstimator needs several seconds of driving per gear before its
-// estimate is trustworthy. Final drive/tire size are deliberately NOT part
-// of this model: they cancel out in tuneRatioBetween's ratio-of-ratios, so
-// only the raw per-gear numbers shown in-game are needed.
+// drive) for tunable cars, but never exposes them over UDP telemetry - this
+// is the only way to record what a build's gearing actually is.
 //
-// A tune's `id` doubles as the build key TelemetryProcessor uses for
-// CarProfileStore once the tune is active - see handleCarChange's doc
-// comment there. This is what gives two different tunes of the "same" car
-// (e.g. a 5-speed and a 10-speed build of the same car_ordinal) fully
-// separate learned power-curve/efficiency-map/shift-history data with zero
-// changes needed to CarProfileStore itself.
+// A tune's `id` doubles as the build key TelemetryProcessor uses (see
+// handleCarChange's doc comment there) and, going forward, as the key
+// recorded sessions are tagged with - this is what lets two different tunes
+// of the "same" car (e.g. a 5-speed and a 10-speed build of the same
+// car_ordinal) keep fully separate recorded sessions instead of being lumped
+// together under one car_ordinal.
 
 import * as crypto from "crypto";
 import * as path from "path";
@@ -22,8 +18,8 @@ export interface GearboxTune {
   id: string;
   carOrdinal: number;
   name: string;
-  /** Exact per-gear ratio as shown in Forza's tuning menu - no final drive
-   * or tire size needed (see file doc comment). */
+  /** Exact per-gear ratio as shown in Forza's tuning menu - final drive and
+   * tire size are recorded separately in-game and aren't needed here. */
   gearRatios: Record<number, number>;
   createdAt: string;
   updatedAt: string;
@@ -129,7 +125,7 @@ export class GearboxTuneStore {
     return row ? this.getTune(row[1]) : null;
   }
 
-  /** Pass `tuneId: null` to deactivate (falls back to GearRatioEstimator). */
+  /** Pass `tuneId: null` to deactivate. */
   setActiveTune(carOrdinal: number, tuneId: string | null): void {
     const activePath = this.filePath(ACTIVE_TUNE_FILE);
     const rows = readCsvRows(activePath).filter(
@@ -181,22 +177,4 @@ export class GearboxTuneStore {
       updatedAt: tuneRow[4],
     };
   }
-}
-
-/**
- * Ratio of toGear's ratio to fromGear's ratio, from a tune's exact per-gear
- * numbers - mirrors GearRatioEstimator.ratioBetween's math exactly, but with
- * no estimation error since these come straight from Forza's tuning menu.
- * Returns null if either gear isn't in the tune (e.g. gear 1 has no
- * "previous" gear) or fromGear's ratio is 0.
- */
-export function tuneRatioBetween(
-  tune: GearboxTune,
-  fromGear: number,
-  toGear: number,
-): number | null {
-  const from = tune.gearRatios[fromGear];
-  const to = tune.gearRatios[toGear];
-  if (from === undefined || to === undefined || from === 0) return null;
-  return to / from;
 }

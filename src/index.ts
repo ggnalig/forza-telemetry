@@ -25,7 +25,7 @@ class CarDashTelemetrySystem {
     const gearboxTuneStore = new GearboxTuneStore();
 
     this.udpListener = new UdpListener(7300);
-    this.telemetryProcessor = new TelemetryProcessor(false, undefined, gearboxTuneStore);
+    this.telemetryProcessor = new TelemetryProcessor(false, gearboxTuneStore);
     this.webSocketServer = new WebSocketServer(3001);
     this.telemetryLogger = new TelemetryLogger();
     this.tuneApiServer = new TuneApiServer(gearboxTuneStore, 3002);
@@ -149,8 +149,8 @@ class CarDashTelemetrySystem {
     try {
       console.log("🛑 Stopping telemetry system...");
 
-      // Persist the current car's learned shift/gearing profile before exit
-      this.telemetryProcessor.persistCurrentCarProfile();
+      // TODO(Phase C): finalize any in-progress recorded session here
+      // (sessionRecorder.finalizeActiveSession()) before the pipeline stops.
 
       // Stop UDP listener
       await this.udpListener.stop();

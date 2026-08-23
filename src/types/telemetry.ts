@@ -184,8 +184,8 @@ export interface ProcessedTelemetryData {
     displayName: string;
   } | null;
   // The manually-entered GearboxTune active for this car, if any - see
-  // src/services/gearbox-tune-store.ts. Null means gear ratios are coming
-  // from GearRatioEstimator's statistical estimate instead.
+  // src/services/gearbox-tune-store.ts. Null means no tune has been
+  // selected for this car.
   activeTune: {
     id: string;
     carOrdinal: number;
@@ -194,26 +194,11 @@ export interface ProcessedTelemetryData {
     createdAt: string;
     updatedAt: string;
   } | null;
-  efficiency?: {
-    map: {
-      [gear: number]: {
-        rpmMin: number;
-        rpmMax: number;
-        rpmAvg: number;
-        rpmOptimal: number;
-        observedRpmRange: [number, number];
-      };
-    };
-    recommendations?: {
-      upshiftRecommended: boolean;
-      downshiftRecommended: boolean;
-    };
-    lights?: string[];
-    currentRpm?: number;
-    finalShiftRPM?: number;
+  diagnostics: {
     // Highest rpm ever observed at WOT for this car build - see
-    // RpmCeilingTracker. A diagnostic for cross-checking engine.maxRpm
-    // against the actual empirically-observed rev limiter.
-    observedRpmCeiling?: number;
+    // RpmCeilingTracker. A passive info stat for cross-checking engine.maxRpm
+    // against the actual empirically-observed rev limiter; not fed back into
+    // any active correction.
+    observedRpmCeiling: number;
   };
 }

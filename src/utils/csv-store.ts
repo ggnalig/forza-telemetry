@@ -1,9 +1,9 @@
 // Shared hand-rolled CSV reader/writer for the small per-file "tables" used
-// by CarProfileStore and GearboxTuneStore. Unlike the original copy of this
-// code (which assumed every field was numeric or an ISO timestamp - never
-// containing a comma or quote), this one properly quotes/escapes fields
-// (RFC4180-style) since GearboxTuneStore persists free-text tune names that
-// a user could reasonably put a comma in (e.g. "R33 - Biru, Turbo Kit").
+// by GearboxTuneStore. Unlike the original copy of this code (which assumed
+// every field was numeric or an ISO timestamp - never containing a comma or
+// quote), this one properly quotes/escapes fields (RFC4180-style) since
+// GearboxTuneStore persists free-text tune names that a user could
+// reasonably put a comma in (e.g. "R33 - Biru, Turbo Kit").
 
 import * as fs from "fs";
 import * as path from "path";
