@@ -295,21 +295,24 @@ function driveSessionFrame(
   return processor.process(parsed!);
 }
 
-// Matches buildPacket's defaults (carClass 5, performanceIndex 700,
-// drivetrain 1, numCylinders 6, maxRpm 8000) - lets tests filter
-// listSessions() down to just their own carOrdinal instead of asserting on
-// the full list, since the sqlite file is shared across every test in this
-// file (each test's sessions otherwise accumulate in listSessions()).
+// Every car now auto-gets a tune the first time it's ever seen (see
+// TelemetryProcessor.handleCarChange's auto-provisioning), so a build's
+// real buildKey is that auto-created tune's random `id`, not a
+// deterministically-computable composite string - looked up from the
+// shared test data directory instead. MUST be called after driving at
+// least one frame for `carOrdinal` (that's what creates the tune) - lets
+// tests filter listSessions() down to just their own carOrdinal instead of
+// asserting on the full list, since the sqlite file is shared across every
+// test in this file (each test's sessions otherwise accumulate in
+// listSessions()).
 function buildKeyFor(carOrdinal: number): string {
-  return computeBuildKey({
-    carOrdinal,
-    carClass: 5,
-    performanceIndex: 700,
-    drivetrain: 1,
-    numCylinders: 6,
-    idleRpm: 800,
-    maxRpm: 8000,
-  });
+  const tune = new GearboxTuneStore(testProfileDir).getActiveTune(carOrdinal);
+  if (!tune) {
+    throw new Error(
+      `no active tune for car ${carOrdinal} yet - drive at least one frame before calling buildKeyFor`,
+    );
+  }
+  return tune.id;
 }
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -516,8 +519,11 @@ test("an active tune's RPM overrides are applied live, falling back to defaults"
   result = drive(3);
   assert.equal(result.diagnostics.effectiveMaxRpm, 8500);
 
-  // A car with no active tune falls back to the game's own maxRpm and the
-  // library-wide shift-light defaults.
+  // A different, never-before-seen car auto-gets its own (empty) tune (see
+  // the auto-provisioning tests below) with no overrides of its own yet, so
+  // it still falls back to the game's own maxRpm and the library-wide
+  // shift-light defaults - same observable behavior as a genuinely untuned
+  // car, just via a tune object now rather than a null one.
   const untunedResult = (() => {
     const packet = buildPacket({ carOrdinal: 5005, gear: 2, rpm: 4000, maxRpm: 7500 });
     return processor.process(fh6TelemetryParser.parse(packet)!);
@@ -527,6 +533,127 @@ test("an active tune's RPM overrides are applied live, falling back to defaults"
   assert.deepEqual(
     untunedResult.diagnostics.shiftLightPercents,
     new SettingsStore(testProfileDir).getGeneralSettings().shiftLightPercents,
+  );
+});
+
+// --- Auto-provisioning + live per-gear RPM auto-tracking (2026-08-23) ---
+// User asked to remove the "visit Car Settings before driving a new car"
+// friction entirely: a tune is now auto-created+activated the first time a
+// car is ever seen, and its maxRpmPerGearOverride keeps refining itself
+// live from real WOT driving instead of requiring a manual round-trip to
+// type in an observed number. See TelemetryProcessor.handleCarChange /
+// computeEffectiveRpm and PerGearRpmCeilingTracker.
+
+test("a never-before-seen car gets a tune auto-created and activated on the very first frame", () => {
+  const tuneStore = new GearboxTuneStore(testProfileDir);
+  const processor = new TelemetryProcessor(false, tuneStore, new SessionRecorder(testProfileDir, 100, 20), new SettingsStore(testProfileDir));
+  const carOrdinal = 6001;
+
+  assert.equal(tuneStore.listTunes(carOrdinal).length, 0, "sanity check: nothing exists for this car yet");
+
+  const packet = buildPacket({ carOrdinal, gear: 2, rpm: 4000 });
+  processor.process(fh6TelemetryParser.parse(packet)!);
+
+  const tunes = tuneStore.listTunes(carOrdinal);
+  assert.equal(tunes.length, 1, "exactly one auto-created tune, not zero and not a duplicate on repeat frames");
+  assert.deepEqual(tunes[0].gearRatios, {}, "gear ratios can't be inferred from telemetry - left empty for the user to fill in later, or never");
+  assert.ok(tunes[0].name.startsWith("Auto -"), "auto-created tunes are clearly labeled as such");
+
+  const active = tuneStore.getActiveTune(carOrdinal);
+  assert.equal(active?.id, tunes[0].id, "the auto-created tune is immediately activated, no manual step needed");
+});
+
+test("a car with an existing but inactive manual tune does NOT get a redundant auto-tune", () => {
+  const tuneStore = new GearboxTuneStore(testProfileDir);
+  const processor = new TelemetryProcessor(false, tuneStore, new SessionRecorder(testProfileDir, 100, 20), new SettingsStore(testProfileDir));
+  const carOrdinal = 6002;
+
+  const manualTune = tuneStore.createTune(carOrdinal, "My Manual Tune", { 1: 3.5 });
+  // Deliberately left inactive - the user created it but hasn't selected it.
+
+  const packet = buildPacket({ carOrdinal, gear: 2, rpm: 4000 });
+  processor.process(fh6TelemetryParser.parse(packet)!);
+
+  assert.equal(
+    tuneStore.listTunes(carOrdinal).length,
+    1,
+    "must not create a second tune just because none happens to be active",
+  );
+  assert.equal(
+    tuneStore.getActiveTune(carOrdinal),
+    null,
+    "an existing manual tune is never auto-activated on the user's behalf either - that stays their call",
+  );
+  assert.equal(tuneStore.getTune(manualTune.id)?.name, "My Manual Tune", "the manual tune itself is untouched");
+});
+
+test("per-gear RPM auto-tracking raises effectiveMaxRpm from real WOT driving but never lowers it", () => {
+  const tuneStore = new GearboxTuneStore(testProfileDir);
+  const processor = new TelemetryProcessor(false, tuneStore, new SessionRecorder(testProfileDir, 100, 20), new SettingsStore(testProfileDir));
+  const carOrdinal = 6003;
+
+  const drive = (gear: number, rpm: number, throttle = 1) => {
+    const packet = buildPacket({ carOrdinal, gear, rpm, throttle, maxRpm: 8000 });
+    return processor.process(fh6TelemetryParser.parse(packet)!);
+  };
+
+  // A modest first WOT pull, well under engine.maxRpm, must NOT shrink the
+  // gauge's scale down to what's merely been seen so far.
+  let result = drive(3, 5000);
+  assert.equal(result.diagnostics.effectiveMaxRpm, 8000, "an early low observation must not undercut engine.maxRpm");
+
+  // A real WOT pull past engine.maxRpm raises the ceiling for that gear.
+  result = drive(3, 8300);
+  assert.equal(result.diagnostics.effectiveMaxRpm, 8300);
+
+  // A lower WOT rpm afterwards must not lower it back down.
+  result = drive(3, 7000);
+  assert.equal(result.diagnostics.effectiveMaxRpm, 8300, "the ceiling must not decrease once raised");
+
+  // A non-WOT frame, even at a higher rpm, must not count as an observation.
+  result = drive(3, 9000, 0.3);
+  assert.equal(result.diagnostics.effectiveMaxRpm, 8300, "throttle below the WOT threshold must be ignored");
+
+  // A different gear has its own independent ceiling.
+  result = drive(4, 6000);
+  assert.equal(result.diagnostics.effectiveMaxRpm, 8000, "gear 4's own ceiling hasn't been raised past engine.maxRpm yet");
+});
+
+test("an auto-tracked per-gear ceiling is persisted into the tune, surviving a fresh processor instance", () => {
+  const tuneStore = new GearboxTuneStore(testProfileDir);
+  const recorder = new SessionRecorder(testProfileDir, 100, 20);
+  const processor = new TelemetryProcessor(false, tuneStore, recorder, new SettingsStore(testProfileDir));
+  const carOrdinal = 6004;
+
+  const drive = (gear: number, rpm: number) => {
+    const packet = buildPacket({ carOrdinal, gear, rpm, throttle: 1, maxRpm: 8000 });
+    return processor.process(fh6TelemetryParser.parse(packet)!);
+  };
+
+  drive(3, 8300); // raises gear 3's ceiling past engine.maxRpm
+
+  // Force the pending flush: switching build (a different car ordinal) is
+  // one of the two triggers that persist immediately, not just the
+  // throttle timer.
+  const otherCarPacket = buildPacket({ carOrdinal: 6099, gear: 2, rpm: 4000, throttle: 1 });
+  processor.process(fh6TelemetryParser.parse(otherCarPacket)!);
+
+  const persistedTune = tuneStore.getActiveTune(carOrdinal);
+  assert.equal(
+    persistedTune?.maxRpmPerGearOverride?.[3],
+    8300,
+    "the auto-discovered ceiling must actually be written to disk, not just live in memory",
+  );
+
+  // A brand new processor instance (simulating a server restart) reading
+  // the same store must pick up where the old one left off, not forget it.
+  const freshProcessor = new TelemetryProcessor(false, tuneStore, recorder, new SettingsStore(testProfileDir));
+  const packet = buildPacket({ carOrdinal, gear: 3, rpm: 5000, throttle: 1, maxRpm: 8000 });
+  const result = freshProcessor.process(fh6TelemetryParser.parse(packet)!);
+  assert.equal(
+    result.diagnostics.effectiveMaxRpm,
+    8300,
+    "a fresh processor must seed from the persisted value, not start back at engine.maxRpm",
   );
 });
 
@@ -555,7 +682,6 @@ test("analyzeByBuildKey aggregates observed WOT rpm overall and per gear across 
   const recorder = new SessionRecorder(testProfileDir, 100, 20);
   const processor = createTestProcessor(recorder);
   const carOrdinal = 5006;
-  const buildKey = buildKeyFor(carOrdinal);
 
   const drive = (gear: number, rpm: number, throttle: number) => {
     const packet = buildPacket({ carOrdinal, gear, rpm, throttle });
@@ -569,6 +695,9 @@ test("analyzeByBuildKey aggregates observed WOT rpm overall and per gear across 
   drive(2, 9000, 0.3); // NOT WOT - must be ignored
   drive(3, 7200, 1); // WOT, gear 3
 
+  // Looked up only now (not before driving) - auto-provisioning creates the
+  // tune (and therefore its buildKey) on the first frame, see buildKeyFor.
+  const buildKey = buildKeyFor(carOrdinal);
   const report = recorder.analyzeByBuildKey(buildKey);
   assert.ok(report);
   assert.equal(report?.carOrdinal, carOrdinal);
