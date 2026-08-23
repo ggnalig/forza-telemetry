@@ -101,11 +101,12 @@ export class TelemetryProcessor {
    * comparison research). These are plain user-entered numbers, never
    * anything derived/learned:
    *  - maxRpm: maxRpmPerGearOverride[gear] takes precedence over
-   *    maxRpmOverride, which takes precedence over engine.maxRpm. Neutral
-   *    (gear 0) and Reverse (gear -1, see parser.ts's `isReversing`
-   *    sentinel) share a single "N/R" bucket at key 0 - there's no
-   *    meaningful separate redline concept for reverse, and the UI's
-   *    per-gear override editor only ever writes one combined N/R row.
+   *    maxRpmOverride, which takes precedence over engine.maxRpm. Reverse
+   *    (raw gear 0) and Neutral (raw gear 11 - confirmed empirically
+   *    in-game, see parser.ts's gear comment) share a single "N/R" bucket
+   *    at key 0 - there's no meaningful separate redline concept for
+   *    reverse, and the UI's per-gear override editor only ever writes one
+   *    combined N/R row.
    *  - redline: redlineOverride if set, otherwise equal to the effective
    *    maxRpm above (matches SimHub's "redline = maxRpm" baseline).
    *  - shiftLightPercents: the tune's own if set, otherwise the persisted
@@ -116,7 +117,8 @@ export class TelemetryProcessor {
     telemetry: TelemetryData,
   ): { maxRpm: number; redline: number; shiftLightPercents: ShiftLightPercents } {
     const tune = this.activeTune;
-    const perGearKey = telemetry.input.gear <= 0 ? 0 : telemetry.input.gear;
+    const perGearKey =
+      telemetry.input.gear === 0 || telemetry.input.gear === 11 ? 0 : telemetry.input.gear;
     const maxRpm =
       tune?.maxRpmPerGearOverride?.[perGearKey] ??
       tune?.maxRpmOverride ??
@@ -214,8 +216,10 @@ export class TelemetryProcessor {
       validatedData.engine.rpm = Math.max(data.engine.idleRpm, data.engine.rpm);
     }
 
-    // Validate gear vs speed relationship
-    if (data.input.gear === 0 && data.performance.speedKmh > 5) {
+    // Validate gear vs speed relationship. Neutral is raw gear 11 (confirmed
+    // empirically in-game - see parser.ts's gear comment); raw gear 0 is
+    // Reverse, which has no such "shouldn't be moving" expectation.
+    if (data.input.gear === 11 && data.performance.speedKmh > 5) {
       // Car shouldn't be moving fast in neutral
       validatedData.performance.speedKmh = Math.min(
         5,

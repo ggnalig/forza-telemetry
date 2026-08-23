@@ -180,28 +180,30 @@ test("parser decodes a valid 324-byte packet correctly", () => {
   assert.equal(parsed.lap.number, 3);
 });
 
-test("parser maps negative raw speed + gear 0 to the -1 Reverse sentinel, and reports speedKmh as a positive magnitude", () => {
-  const packet = buildPacket({ speedMs: -12, gear: 0 });
-  const result = fh6TelemetryParser.parse(packet);
-  assert.ok(result, "expected a valid packet to parse successfully");
-
-  const { parsed } = result!;
-  assert.equal(parsed.input.gear, -1);
-  assert.ok(Math.abs(parsed.performance.speedKmh - 12 * 3.6) < 0.01);
-});
-
-test("parser keeps gear 0 as true Neutral when speed is not negative", () => {
-  const packet = buildPacket({ speedMs: 0, gear: 0 });
+// Raw gear byte encoding confirmed empirically against real FH6 telemetry
+// (an earlier speed-sign-based hypothesis was tried and confirmed wrong
+// live in-game - see the reverse_gear_fix memory): 0 = Reverse, 1-10 =
+// forward gears, 11 = Neutral. The parser passes it through unchanged, no
+// sentinel substitution.
+test("parser passes raw gear 0 (Reverse) through unchanged", () => {
+  const packet = buildPacket({ gear: 0 });
   const result = fh6TelemetryParser.parse(packet);
   assert.ok(result, "expected a valid packet to parse successfully");
   assert.equal(result!.parsed.input.gear, 0);
 });
 
-test("parser ignores tiny negative speed jitter at a stop (doesn't misreport Reverse)", () => {
-  const packet = buildPacket({ speedMs: -0.01, gear: 0 });
+test("parser passes raw gear 11 (Neutral) through unchanged", () => {
+  const packet = buildPacket({ gear: 11 });
   const result = fh6TelemetryParser.parse(packet);
   assert.ok(result, "expected a valid packet to parse successfully");
-  assert.equal(result!.parsed.input.gear, 0);
+  assert.equal(result!.parsed.input.gear, 11);
+});
+
+test("parser normalizes negative speed to a positive magnitude rather than dropping the packet", () => {
+  const packet = buildPacket({ speedMs: -12 });
+  const result = fh6TelemetryParser.parse(packet);
+  assert.ok(result, "expected a valid packet to parse successfully");
+  assert.ok(Math.abs(result!.parsed.performance.speedKmh - 12 * 3.6) < 0.01);
 });
 
 test("computeBuildKey joins ordinal/numCylinders/maxRpm/drivetrain, rounding maxRpm", () => {
@@ -528,7 +530,7 @@ test("an active tune's RPM overrides are applied live, falling back to defaults"
   );
 });
 
-test("maxRpmPerGearOverride's key 0 is a combined N/R bucket - applies to both true Neutral and the -1 Reverse sentinel", () => {
+test("maxRpmPerGearOverride's key 0 is a combined N/R bucket - applies to both Reverse (raw gear 0) and Neutral (raw gear 11)", () => {
   const tuneStore = new GearboxTuneStore(testProfileDir);
   const recorder = new SessionRecorder(testProfileDir, 100, 20);
   const processor = new TelemetryProcessor(false, tuneStore, recorder, new SettingsStore(testProfileDir));
@@ -540,16 +542,13 @@ test("maxRpmPerGearOverride's key 0 is a combined N/R bucket - applies to both t
   });
   tuneStore.setActiveTune(carOrdinal, tune.id);
 
-  // True Neutral: gear 0, not reversing (positive/zero speed).
-  const neutralPacket = buildPacket({ carOrdinal, gear: 0, speedMs: 0, rpm: 4000, maxRpm: 8000 });
-  const neutralResult = processor.process(fh6TelemetryParser.parse(neutralPacket)!);
-  assert.equal(neutralResult.diagnostics.effectiveMaxRpm, 6000);
-
-  // Reverse: raw gear byte is still 0, but negative speed flips it to the -1
-  // sentinel - the same N/R override bucket must still apply.
-  const reversePacket = buildPacket({ carOrdinal, gear: 0, speedMs: -10, rpm: 4000, maxRpm: 8000 });
+  const reversePacket = buildPacket({ carOrdinal, gear: 0, rpm: 4000, maxRpm: 8000 });
   const reverseResult = processor.process(fh6TelemetryParser.parse(reversePacket)!);
   assert.equal(reverseResult.diagnostics.effectiveMaxRpm, 6000);
+
+  const neutralPacket = buildPacket({ carOrdinal, gear: 11, rpm: 4000, maxRpm: 8000 });
+  const neutralResult = processor.process(fh6TelemetryParser.parse(neutralPacket)!);
+  assert.equal(neutralResult.diagnostics.effectiveMaxRpm, 6000);
 });
 
 test("analyzeByBuildKey aggregates observed WOT rpm overall and per gear across sessions", () => {
