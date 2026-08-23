@@ -11,11 +11,13 @@ import { CarMeta, computeBuildKey } from "./car-meta";
 import { lookupCarInfo } from "../services/car-database";
 import { GearboxTuneStore, GearboxTune } from "../services/gearbox-tune-store";
 import { RpmCeilingTracker } from "../services/rpm-ceiling-tracker";
+import { SessionRecorder } from "../services/session-recorder";
 
 export class TelemetryProcessor {
   private physicsValidator: PhysicsValidator;
   private rpmCeilingTracker: RpmCeilingTracker;
   private gearboxTuneStore: GearboxTuneStore;
+  private sessionRecorder: SessionRecorder;
   private lastBuildKey: string | null = null;
   /** Set from handleCarChange whenever a GearboxTune is active for the
    * current car - null means no tune has been selected for it. */
@@ -24,10 +26,12 @@ export class TelemetryProcessor {
   constructor(
     debugMode = false,
     gearboxTuneStore: GearboxTuneStore = new GearboxTuneStore(),
+    sessionRecorder: SessionRecorder = new SessionRecorder(),
   ) {
     this.physicsValidator = new PhysicsValidator(debugMode);
     this.rpmCeilingTracker = new RpmCeilingTracker();
     this.gearboxTuneStore = gearboxTuneStore;
+    this.sessionRecorder = sessionRecorder;
   }
 
   /**
@@ -53,6 +57,10 @@ export class TelemetryProcessor {
    * itself. Switching to (or creating) a new tune whenever you know a
    * modification changed something is what actually resets the tracker in
    * that case, not any automatic detection.
+   *
+   * A build-key change also finalizes any in-progress recorded session (see
+   * SessionRecorder.onBuildChange) - a session's frames should never span
+   * two different builds.
    */
   private handleCarChange(telemetry: TelemetryData): void {
     const meta: CarMeta = {
@@ -70,6 +78,7 @@ export class TelemetryProcessor {
 
     if (this.lastBuildKey !== buildKey) {
       this.rpmCeilingTracker.reset();
+      this.sessionRecorder.onBuildChange(buildKey);
     }
 
     this.activeTune = activeTune;
@@ -122,6 +131,11 @@ export class TelemetryProcessor {
           `(engine.maxRpm reports ${transformedData.engine.maxRpm.toFixed(0)})`,
       );
     }
+
+    // `this.lastBuildKey` is always the current frame's build key by this
+    // point - handleCarChange sets it unconditionally every frame, not just
+    // on a change.
+    this.sessionRecorder.onFrame(transformedData, this.lastBuildKey!);
 
     return {
       raw: rawData.raw,

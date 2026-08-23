@@ -12,19 +12,26 @@ import { fh6TelemetryParser } from "../src/udp/parser";
 import { TelemetryProcessor } from "../src/telemetry/processor";
 import { computeBuildKey } from "../src/telemetry/car-meta";
 import { GearboxTuneStore } from "../src/services/gearbox-tune-store";
+import { SessionRecorder } from "../src/services/session-recorder";
 
 const FH6_DASH_SIZE = 324;
 
-// GearboxTuneStore persists to disk - point every processor created in this
-// file at a throwaway directory so tests never write into (or read stale
-// data from) the real `data/` folder.
+// GearboxTuneStore/SessionRecorder both persist to disk - point every
+// processor created in this file at a throwaway directory so tests never
+// write into (or read stale data from) the real `data/` folder.
 const testProfileDir = fs.mkdtempSync(
   path.join(os.tmpdir(), "forza-pipeline-test-"),
 );
 after(() => fs.rmSync(testProfileDir, { recursive: true, force: true }));
 
-function createTestProcessor(): TelemetryProcessor {
-  return new TelemetryProcessor(false, new GearboxTuneStore(testProfileDir));
+function createTestProcessor(sessionRecorder?: SessionRecorder): TelemetryProcessor {
+  return new TelemetryProcessor(
+    false,
+    new GearboxTuneStore(testProfileDir),
+    // Short idle timeout/check interval by default so tests exercising
+    // session finalization don't have to wait out the real 10s default.
+    sessionRecorder ?? new SessionRecorder(testProfileDir, 100, 20),
+  );
 }
 
 const OFFSETS = {
@@ -241,4 +248,126 @@ test("observedRpmCeiling resets when the car changes", () => {
     2000,
     "a car change must reset the ceiling, not keep the previous car's value",
   );
+});
+
+// --- Session recording: a session starts once isRaceOn is true, records
+// frames tagged with the current build key, and is finalized by the idle
+// timeout once frames stop arriving (see session-recorder.ts's doc comment
+// for why isRaceOn=0/lap.number can't be used symmetrically for the end). ---
+
+function driveSessionFrame(
+  processor: TelemetryProcessor,
+  carOrdinal: number,
+  rpm = 4000,
+) {
+  const packet = buildPacket({ carOrdinal, rpm, gear: 3, throttle: 1 });
+  const parsed = fh6TelemetryParser.parse(packet);
+  assert.ok(parsed, "expected packet to parse during test drive");
+  return processor.process(parsed!);
+}
+
+// Matches buildPacket's defaults (carClass 5, performanceIndex 700,
+// drivetrain 1, numCylinders 6, maxRpm 8000) - lets tests filter
+// listSessions() down to just their own carOrdinal instead of asserting on
+// the full list, since the sqlite file is shared across every test in this
+// file (each test's sessions otherwise accumulate in listSessions()).
+function buildKeyFor(carOrdinal: number): string {
+  return computeBuildKey({
+    carOrdinal,
+    carClass: 5,
+    performanceIndex: 700,
+    drivetrain: 1,
+    numCylinders: 6,
+    idleRpm: 800,
+    maxRpm: 8000,
+  });
+}
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("a session starts on the first frame and records frames tagged with the current build key", () => {
+  const recorder = new SessionRecorder(testProfileDir, 100, 20);
+  const processor = createTestProcessor(recorder);
+  const carOrdinal = 4001;
+
+  driveSessionFrame(processor, carOrdinal, 4000);
+  driveSessionFrame(processor, carOrdinal, 4500);
+
+  const sessions = recorder.listSessions(buildKeyFor(carOrdinal));
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].status, "recording");
+  assert.equal(sessions[0].carOrdinal, carOrdinal);
+  assert.equal(sessions[0].frameCount, 2);
+
+  const frames = recorder.getFrames(sessions[0].id);
+  assert.equal(frames.length, 2);
+  assert.equal(frames[0].rpm, 4000);
+  assert.equal(frames[1].rpm, 4500);
+});
+
+test("a session with enough frames is marked 'completed' once it goes idle", async () => {
+  const recorder = new SessionRecorder(testProfileDir, 100, 20);
+  const processor = createTestProcessor(recorder);
+  const carOrdinal = 4002;
+
+  for (let i = 0; i < 12; i++) {
+    driveSessionFrame(processor, carOrdinal);
+  }
+
+  await wait(200); // past the 100ms idle timeout, checked every 20ms
+
+  const sessions = recorder.listSessions(buildKeyFor(carOrdinal));
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].status, "completed");
+  assert.ok(sessions[0].endedAt !== null);
+});
+
+test("a session with too few frames is marked 'aborted' once it goes idle", async () => {
+  const recorder = new SessionRecorder(testProfileDir, 100, 20);
+  const processor = createTestProcessor(recorder);
+  const carOrdinal = 4003;
+
+  driveSessionFrame(processor, carOrdinal);
+
+  await wait(200);
+
+  const sessions = recorder.listSessions(buildKeyFor(carOrdinal));
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].status, "aborted");
+});
+
+test("switching to a different build finalizes the old session before the new one starts", () => {
+  const recorder = new SessionRecorder(testProfileDir, 100, 20);
+  const processor = createTestProcessor(recorder);
+
+  driveSessionFrame(processor, 4004);
+  driveSessionFrame(processor, 4004);
+
+  // A different car.ordinal (and therefore a different build key) mid-drive.
+  driveSessionFrame(processor, 4005);
+
+  const [carA] = recorder.listSessions(buildKeyFor(4004));
+  const [carB] = recorder.listSessions(buildKeyFor(4005));
+  assert.ok(carA, "expected car A to have its own session");
+  assert.ok(carB, "expected car B to have its own session");
+  assert.equal(carA.status, "aborted", "car A's session had too few frames (2)");
+  assert.notEqual(
+    carA.buildKey,
+    carB.buildKey,
+    "different car.ordinal must produce a different build key",
+  );
+});
+
+test("deleteSession removes a session and its frames", () => {
+  const recorder = new SessionRecorder(testProfileDir, 100, 20);
+  const processor = createTestProcessor(recorder);
+
+  driveSessionFrame(processor, 4006);
+  const [session] = recorder.listSessions(buildKeyFor(4006));
+  assert.ok(session);
+
+  const deleted = recorder.deleteSession(session.id);
+  assert.equal(deleted, true);
+  assert.equal(recorder.getSession(session.id), null);
+  assert.deepEqual(recorder.getFrames(session.id), []);
 });

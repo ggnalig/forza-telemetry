@@ -11,6 +11,8 @@ import WebSocketServer from "./websocket/server";
 import { TelemetryLogger } from "./utils/logger";
 import { GearboxTuneStore } from "./services/gearbox-tune-store";
 import { TuneApiServer } from "./http/tune-api-server";
+import { SessionRecorder } from "./services/session-recorder";
+import { SessionApiServer } from "./http/session-api-server";
 
 class CarDashTelemetrySystem {
   private udpListener: UdpListener;
@@ -18,17 +20,25 @@ class CarDashTelemetrySystem {
   private webSocketServer: WebSocketServer;
   private telemetryLogger: TelemetryLogger;
   private tuneApiServer: TuneApiServer;
+  private sessionRecorder: SessionRecorder;
+  private sessionApiServer: SessionApiServer;
   private isRunning: boolean = false;
   private debugMode: boolean = false;
 
   constructor() {
     const gearboxTuneStore = new GearboxTuneStore();
+    this.sessionRecorder = new SessionRecorder();
 
     this.udpListener = new UdpListener(7300);
-    this.telemetryProcessor = new TelemetryProcessor(false, gearboxTuneStore);
+    this.telemetryProcessor = new TelemetryProcessor(
+      false,
+      gearboxTuneStore,
+      this.sessionRecorder,
+    );
     this.webSocketServer = new WebSocketServer(3001);
     this.telemetryLogger = new TelemetryLogger();
     this.tuneApiServer = new TuneApiServer(gearboxTuneStore, 3002);
+    this.sessionApiServer = new SessionApiServer(this.sessionRecorder, 3003);
 
     this.setupEventHandlers();
   }
@@ -114,6 +124,7 @@ class CarDashTelemetrySystem {
 
       // WebSocket server is already started in constructor
       this.tuneApiServer.start();
+      this.sessionApiServer.start();
 
       this.isRunning = true;
 
@@ -121,6 +132,7 @@ class CarDashTelemetrySystem {
       console.log(`📡 UDP listener on port ${this.udpListener.getPort()}`);
       console.log("🌐 WebSocket server on port 3001");
       console.log("🔧 Tune API on port 3002");
+      console.log("📼 Session API on port 3003");
       console.log("⏳ Waiting for FH6 Data Out 324-byte telemetry data...");
       console.log("");
       console.log("🔧 System Features:");
@@ -149,8 +161,9 @@ class CarDashTelemetrySystem {
     try {
       console.log("🛑 Stopping telemetry system...");
 
-      // TODO(Phase C): finalize any in-progress recorded session here
-      // (sessionRecorder.finalizeActiveSession()) before the pipeline stops.
+      // Finalize any in-progress recorded session before the pipeline stops,
+      // so a force-kill isn't the only way a session gets left 'recording'.
+      this.sessionRecorder.close();
 
       // Stop UDP listener
       await this.udpListener.stop();
@@ -160,6 +173,9 @@ class CarDashTelemetrySystem {
 
       // Stop tune API server
       await this.tuneApiServer.stop();
+
+      // Stop session API server
+      await this.sessionApiServer.stop();
 
       this.isRunning = false;
       console.log("✅ Telemetry system stopped");
