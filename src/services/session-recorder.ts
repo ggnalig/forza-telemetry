@@ -53,6 +53,10 @@ export interface SessionSummary {
   id: string;
   buildKey: string;
   carOrdinal: number;
+  // Captured once at session start (per-car constants, not per-frame data) -
+  // lets a replay viewer scale a gauge correctly without re-deriving them.
+  maxRpm: number;
+  idleRpm: number;
   startedAt: number;
   endedAt: number | null;
   frameCount: number;
@@ -106,6 +110,8 @@ export class SessionRecorder {
         id TEXT PRIMARY KEY,
         build_key TEXT NOT NULL,
         car_ordinal INTEGER NOT NULL,
+        max_rpm REAL NOT NULL,
+        idle_rpm REAL NOT NULL,
         started_at INTEGER NOT NULL,
         ended_at INTEGER,
         frame_count INTEGER NOT NULL DEFAULT 0,
@@ -176,7 +182,7 @@ export class SessionRecorder {
 
     if (!this.activeSessionId) {
       if (isRaceOn) {
-        this.startSession(buildKey, telemetry.car.ordinal);
+        this.startSession(buildKey, telemetry);
       }
     } else if (!isRaceOn) {
       this.finalizeActiveSession();
@@ -187,15 +193,23 @@ export class SessionRecorder {
     }
   }
 
-  private startSession(buildKey: string, carOrdinal: number): void {
+  private startSession(buildKey: string, telemetry: TelemetryData): void {
     this.activeSessionId = randomUUID();
     this.activeBuildKey = buildKey;
     this.frameIndex = 0;
     this.db
       .prepare(
-        "INSERT INTO sessions (id, build_key, car_ordinal, started_at, status) VALUES (?, ?, ?, ?, 'recording')",
+        `INSERT INTO sessions (id, build_key, car_ordinal, max_rpm, idle_rpm, started_at, status)
+         VALUES (?, ?, ?, ?, ?, ?, 'recording')`,
       )
-      .run(this.activeSessionId, buildKey, carOrdinal, Date.now());
+      .run(
+        this.activeSessionId,
+        buildKey,
+        telemetry.car.ordinal,
+        telemetry.engine.maxRpm,
+        telemetry.engine.idleRpm,
+        Date.now(),
+      );
   }
 
   private insertFrame(telemetry: TelemetryData): void {
@@ -301,6 +315,8 @@ export class SessionRecorder {
       id: row.id,
       buildKey: row.build_key,
       carOrdinal: row.car_ordinal,
+      maxRpm: row.max_rpm,
+      idleRpm: row.idle_rpm,
       startedAt: row.started_at,
       endedAt: row.ended_at,
       frameCount: row.frame_count,
