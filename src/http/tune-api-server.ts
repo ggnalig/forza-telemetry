@@ -120,15 +120,20 @@ export class TuneApiServer {
         // Only include a key if the request body actually sent it, so a PUT
         // that doesn't mention e.g. maxRpmOverride leaves the stored value
         // untouched rather than implicitly clearing it (see
-        // GearboxTuneStore.updateTune's `"key" in updates` checks).
+        // GearboxTuneStore.updateTune's `"key" in updates` checks). `null` is
+        // the wire sentinel for "clear this override" - JSON.stringify drops
+        // `undefined` keys entirely on the client, so `null` is the only way
+        // a JSON body can express "explicitly cleared" over HTTP.
+        const clearable = <T,>(value: T | null | undefined): T | undefined =>
+          value === null ? undefined : value;
         const updates: Parameters<typeof this.store.updateTune>[1] = {
           name: body?.name,
           gearRatios: body?.gearRatios,
         };
-        if (body && "maxRpmOverride" in body) updates.maxRpmOverride = body.maxRpmOverride;
-        if (body && "maxRpmPerGearOverride" in body) updates.maxRpmPerGearOverride = body.maxRpmPerGearOverride;
-        if (body && "redlineOverride" in body) updates.redlineOverride = body.redlineOverride;
-        if (body && "shiftLightPercents" in body) updates.shiftLightPercents = body.shiftLightPercents;
+        if (body && "maxRpmOverride" in body) updates.maxRpmOverride = clearable(body.maxRpmOverride);
+        if (body && "maxRpmPerGearOverride" in body) updates.maxRpmPerGearOverride = clearable(body.maxRpmPerGearOverride);
+        if (body && "redlineOverride" in body) updates.redlineOverride = clearable(body.redlineOverride);
+        if (body && "shiftLightPercents" in body) updates.shiftLightPercents = clearable(body.shiftLightPercents);
 
         const updated = this.store.updateTune(segments[1], updates);
         if (!updated) {
