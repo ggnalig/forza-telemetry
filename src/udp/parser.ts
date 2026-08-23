@@ -140,6 +140,8 @@ const SPEED_MAX_KMH = 500; // Speed validation range
 // jitter at a dead stop shouldn't be read as "reversing", so only treat it
 // as such past this threshold (m/s, well under walking pace).
 const REVERSE_SPEED_THRESHOLD_MS = 0.1;
+// TEMPORARY - see the REVERSE-DEBUG log below.
+let lastReverseDebugLogAt = 0;
 
 export class Fh6TelemetryParser {
   /**
@@ -427,6 +429,19 @@ export class Fh6TelemetryParser {
       const rawGear = buffer.readUInt8(FH6_DASH_OFFSETS.gear);
       const gear = rawGear === 0 && isReversing ? -1 : rawGear;
       const steer = buffer.readInt8(FH6_DASH_OFFSETS.steer);
+
+      // TEMPORARY - remove once Reverse detection is confirmed against real
+      // FH6 telemetry (the `speed < 0` hypothesis above didn't pan out live
+      // in-game, see the reverse_gear_fix memory). Throttled to ~2/sec so it
+      // doesn't flood the console. Search "REVERSE-DEBUG" to find/remove.
+      if (isRaceOn === 1 && Date.now() - lastReverseDebugLogAt > 500) {
+        lastReverseDebugLogAt = Date.now();
+        console.log(
+          `🔍 REVERSE-DEBUG rawGear=${rawGear} speed=${speed.toFixed(2)} ` +
+            `velX=${velocityX.toFixed(2)} velY=${velocityY.toFixed(2)} velZ=${velocityZ.toFixed(2)} ` +
+            `wheelRotFL=${wheelRotationSpeedFL.toFixed(2)} wheelRotRL=${wheelRotationSpeedRL.toFixed(2)}`,
+        );
+      }
 
       // Parse AI assistance data (normalize s8 values)
       const normalizedDrivingLine =
