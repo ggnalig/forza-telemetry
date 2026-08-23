@@ -851,3 +851,60 @@ test("CarProfileStore round-trips a saved profile through the CSV database", () 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test("observedRpmCeiling tracks the highest WOT rpm seen and ignores non-WOT frames", () => {
+  const processor = createTestProcessor();
+  const carOrdinal = 700;
+
+  const drive = (rpm: number, throttle: number) => {
+    const packet = buildPacket({ rpm, maxRpm: 8000, carOrdinal, throttle, gear: 3 });
+    const parsed = fh6TelemetryParser.parse(packet);
+    return processor.process(parsed!);
+  };
+
+  let result = drive(3000, 1);
+  assert.equal(result.efficiency?.observedRpmCeiling, 3000);
+
+  // A higher rpm at partial throttle must NOT count - it's not a genuine
+  // WOT pull, so it isn't representative of the engine's true ceiling.
+  result = drive(7500, 0.5);
+  assert.equal(
+    result.efficiency?.observedRpmCeiling,
+    3000,
+    "partial-throttle frames must not raise the ceiling",
+  );
+
+  // A genuine WOT frame at a higher rpm raises it.
+  result = drive(6000, 1);
+  assert.equal(result.efficiency?.observedRpmCeiling, 6000);
+
+  // A lower WOT rpm afterwards must not lower it back down - it's a ceiling,
+  // not a rolling/latest value.
+  result = drive(4000, 1);
+  assert.equal(
+    result.efficiency?.observedRpmCeiling,
+    6000,
+    "the ceiling must not decrease once raised",
+  );
+});
+
+test("observedRpmCeiling resets when the car changes", () => {
+  const processor = createTestProcessor();
+
+  const drive = (carOrdinal: number, rpm: number) => {
+    const packet = buildPacket({ rpm, maxRpm: 8000, carOrdinal, throttle: 1, gear: 3 });
+    const parsed = fh6TelemetryParser.parse(packet);
+    return processor.process(parsed!);
+  };
+
+  let result = drive(801, 7000);
+  assert.equal(result.efficiency?.observedRpmCeiling, 7000);
+
+  // Switching to a different car must not carry over the old ceiling.
+  result = drive(802, 2000);
+  assert.equal(
+    result.efficiency?.observedRpmCeiling,
+    2000,
+    "a car change must reset the ceiling, not keep the previous car's value",
+  );
+});

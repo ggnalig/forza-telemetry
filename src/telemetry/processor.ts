@@ -23,6 +23,7 @@ import {
   GearboxTune,
   tuneRatioBetween,
 } from "../services/gearbox-tune-store";
+import { RpmCeilingTracker } from "../services/rpm-ceiling-tracker";
 
 export class TelemetryProcessor {
   private physicsValidator: PhysicsValidator;
@@ -30,6 +31,7 @@ export class TelemetryProcessor {
   private gearRatioEstimator: GearRatioEstimator;
   private enginePowerCurve: EnginePowerCurve;
   private shiftEngine: ShiftEngine;
+  private rpmCeilingTracker: RpmCeilingTracker;
   private carProfileStore: CarProfileStore;
   private gearboxTuneStore: GearboxTuneStore;
   private lastBuildKey: string | null = null;
@@ -65,6 +67,7 @@ export class TelemetryProcessor {
     this.gearRatioEstimator = new GearRatioEstimator();
     this.enginePowerCurve = new EnginePowerCurve();
     this.shiftEngine = new ShiftEngine();
+    this.rpmCeilingTracker = new RpmCeilingTracker();
     this.carProfileStore = carProfileStore;
     this.gearboxTuneStore = gearboxTuneStore;
   }
@@ -90,6 +93,14 @@ export class TelemetryProcessor {
    * (identical engine/redline/drivetrain, e.g. a 5-speed vs a 10-speed
    * build) fully separate learned data, closing a gap the composite key
    * above can't: it has no gear-count component at all.
+   *
+   * This same tune-aware key is also what resets `rpmCeilingTracker` (see
+   * its own doc comment) correctly across a modification that changes the
+   * true rev ceiling WITHOUT engine.maxRpm reflecting it - a case
+   * computeBuildKey can't detect on its own since it keys off maxRpm
+   * itself. Switching to (or creating) a new tune whenever you know a
+   * modification changed something is what actually resets the tracker in
+   * that case, not any automatic detection.
    */
   private handleCarChange(telemetry: TelemetryData): void {
     const meta: CarMeta = {
@@ -123,6 +134,7 @@ export class TelemetryProcessor {
       this.gearRatioEstimator.reset();
       this.enginePowerCurve.reset();
       this.shiftEngine.reset();
+      this.rpmCeilingTracker.reset();
 
       this.pendingProfile = this.carProfileStore.load(meta, tuneBuildKey ?? undefined);
     }
@@ -275,6 +287,24 @@ export class TelemetryProcessor {
     );
     this.tryVerifyPendingProfile(transformedData.input.gear);
 
+    // Feed the empirical rev-ceiling tracker: the engine can't physically
+    // exceed its real limiter, so the highest rpm ever seen at WOT converges
+    // to the true redline regardless of what engine.maxRpm claims - logged
+    // whenever it climbs so this can be cross-checked against maxRpm from a
+    // real driving session (see the redline-accuracy investigation).
+    const previousCeiling = this.rpmCeilingTracker.getCeiling();
+    this.rpmCeilingTracker.update(
+      transformedData.engine.rpm,
+      transformedData.input.throttle,
+    );
+    const observedRpmCeiling = this.rpmCeilingTracker.getCeiling();
+    if (observedRpmCeiling > previousCeiling) {
+      console.log(
+        `📈 New observed rpm ceiling: ${observedRpmCeiling.toFixed(0)} ` +
+          `(engine.maxRpm reports ${transformedData.engine.maxRpm.toFixed(0)})`,
+      );
+    }
+
     // Feed the pooled (gear-independent) WOT power curve used for the
     // cross-gear optimal shift point calculation.
     this.enginePowerCurve.update(
@@ -341,6 +371,7 @@ export class TelemetryProcessor {
         lights: hybridShiftData.lights || [],
         currentRpm: transformedData.engine.rpm,
         finalShiftRPM: hybridShiftData.finalShiftRPM,
+        observedRpmCeiling,
       },
     };
   }
