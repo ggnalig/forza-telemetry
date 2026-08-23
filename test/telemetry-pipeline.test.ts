@@ -11,11 +11,9 @@ import * as path from "node:path";
 import { fh6TelemetryParser } from "../src/udp/parser";
 import { TelemetryProcessor } from "../src/telemetry/processor";
 import { computeBuildKey } from "../src/telemetry/car-meta";
-import {
-  GearboxTuneStore,
-  DEFAULT_SHIFT_LIGHT_PERCENTS,
-} from "../src/services/gearbox-tune-store";
+import { GearboxTuneStore } from "../src/services/gearbox-tune-store";
 import { SessionRecorder } from "../src/services/session-recorder";
+import { SettingsStore } from "../src/services/settings-store";
 
 const FH6_DASH_SIZE = 324;
 
@@ -34,6 +32,7 @@ function createTestProcessor(sessionRecorder?: SessionRecorder): TelemetryProces
     // Short idle timeout/check interval by default so tests exercising
     // session finalization don't have to wait out the real 10s default.
     sessionRecorder ?? new SessionRecorder(testProfileDir, 100, 20),
+    new SettingsStore(testProfileDir),
   );
 }
 
@@ -464,7 +463,7 @@ test("updateTune only touches override fields actually present in the update", (
 test("an active tune's RPM overrides are applied live, falling back to defaults", () => {
   const tuneStore = new GearboxTuneStore(testProfileDir);
   const recorder = new SessionRecorder(testProfileDir, 100, 20);
-  const processor = new TelemetryProcessor(false, tuneStore, recorder);
+  const processor = new TelemetryProcessor(false, tuneStore, recorder, new SettingsStore(testProfileDir));
   const carOrdinal = 5004;
 
   const tune = tuneStore.createTune(carOrdinal, "Overridden", { 1: 3.5 }, {
@@ -499,7 +498,10 @@ test("an active tune's RPM overrides are applied live, falling back to defaults"
   })();
   assert.equal(untunedResult.diagnostics.effectiveMaxRpm, 7500);
   assert.equal(untunedResult.diagnostics.effectiveRedline, 7500);
-  assert.deepEqual(untunedResult.diagnostics.shiftLightPercents, DEFAULT_SHIFT_LIGHT_PERCENTS);
+  assert.deepEqual(
+    untunedResult.diagnostics.shiftLightPercents,
+    new SettingsStore(testProfileDir).getGeneralSettings().shiftLightPercents,
+  );
 });
 
 test("analyzeByBuildKey aggregates observed WOT rpm overall and per gear across sessions", () => {
@@ -535,4 +537,75 @@ test("analyzeByBuildKey aggregates observed WOT rpm overall and per gear across 
     null,
     "a build with no recorded sessions must return null, not an empty report",
   );
+});
+
+// --- SettingsStore: the persisted "General settings" default (SimHub's own
+// tab equivalent) - seeds from a bootstrap constant on first read, persists
+// whatever the user sets afterward, and is what TelemetryProcessor falls
+// back to when a tune has no shiftLightPercents of its own. ---
+
+test("SettingsStore seeds bootstrap defaults on first read, then persists whatever is set", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "forza-settings-test-"));
+  try {
+    const store = new SettingsStore(dir);
+    const seeded = store.getGeneralSettings();
+    assert.deepEqual(seeded, { shiftLightPercents: { light1: 0.9, light2: 0.95, redline: 0.96 } });
+
+    store.setGeneralSettings({ shiftLightPercents: { light1: 0.8, light2: 0.88, redline: 0.93 } });
+
+    // A fresh instance pointed at the same directory must see the persisted
+    // value, not the bootstrap default - proves it actually wrote to disk.
+    const reloaded = new SettingsStore(dir).getGeneralSettings();
+    assert.deepEqual(reloaded, { shiftLightPercents: { light1: 0.8, light2: 0.88, redline: 0.93 } });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a tune with no shiftLightPercents falls back to SettingsStore's persisted general default, not a hardcoded one", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "forza-settings-fallback-test-"));
+  try {
+    const settingsStore = new SettingsStore(dir);
+    settingsStore.setGeneralSettings({
+      shiftLightPercents: { light1: 0.7, light2: 0.8, redline: 0.9 },
+    });
+
+    const tuneStore = new GearboxTuneStore(dir);
+    const recorder = new SessionRecorder(dir, 100, 20);
+    const processor = new TelemetryProcessor(false, tuneStore, recorder, settingsStore);
+    const carOrdinal = 5007;
+
+    // No tune active at all for this car - must use the custom general default.
+    const packet = buildPacket({ carOrdinal, gear: 2, rpm: 4000, maxRpm: 8000 });
+    const result = processor.process(fh6TelemetryParser.parse(packet)!);
+    assert.deepEqual(result.diagnostics.shiftLightPercents, { light1: 0.7, light2: 0.8, redline: 0.9 });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- GearboxTuneStore.listAllTunes: the Car Settings tree's data source -
+// every tune across every car, not scoped to one carOrdinal like listTunes. ---
+
+test("listAllTunes returns tunes across multiple car ordinals", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "forza-list-all-tunes-test-"));
+  try {
+    const store = new GearboxTuneStore(dir);
+    store.createTune(6001, "Tune A", { 1: 3.0 });
+    store.createTune(6001, "Tune B", { 1: 3.2 });
+    store.createTune(6002, "Tune C", { 1: 2.8 });
+
+    const all = store.listAllTunes();
+    assert.equal(all.length, 3);
+    assert.deepEqual(
+      all.map((t) => t.carOrdinal).sort(),
+      [6001, 6001, 6002],
+    );
+    assert.deepEqual(
+      all.map((t) => t.name).sort(),
+      ["Tune A", "Tune B", "Tune C"],
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

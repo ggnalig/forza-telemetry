@@ -3,16 +3,32 @@
 // a routing framework).
 
 import * as http from "http";
-import { SessionRecorder } from "../services/session-recorder";
+import { SessionRecorder, SessionSummary } from "../services/session-recorder";
+import { GearboxTuneStore } from "../services/gearbox-tune-store";
+import { lookupCarInfo } from "../services/car-database";
 
 export class SessionApiServer {
   private server: http.Server;
 
   constructor(
     private readonly recorder: SessionRecorder,
+    private readonly gearboxTuneStore: GearboxTuneStore,
     private readonly port: number = 3003,
   ) {
     this.server = http.createServer((req, res) => this.handleRequest(req, res));
+  }
+
+  /** Resolves a session's build_key into a human-readable car name (always,
+   * via the car database) and tune name (only if build_key is an actual
+   * tune id - null means this build was never tuned, a raw computeBuildKey
+   * string) - so the UI can group/label the Sessions tree without a second
+   * round-trip per session. */
+  private enrichSession(session: SessionSummary) {
+    return {
+      ...session,
+      carInfo: lookupCarInfo(session.carOrdinal),
+      tuneName: this.gearboxTuneStore.getTune(session.buildKey)?.name ?? null,
+    };
   }
 
   public start(): void {
@@ -125,7 +141,7 @@ export class SessionApiServer {
           this.sendJson(res, 404, { error: "Session not found" });
           return;
         }
-        this.sendJson(res, 200, { session });
+        this.sendJson(res, 200, { session: this.enrichSession(session) });
         return;
       }
       if (method === "DELETE") {
@@ -138,7 +154,8 @@ export class SessionApiServer {
     // GET /sessions?buildKey=X
     if (!segments[1] && method === "GET") {
       const buildKey = query.get("buildKey") ?? undefined;
-      this.sendJson(res, 200, { sessions: this.recorder.listSessions(buildKey) });
+      const sessions = this.recorder.listSessions(buildKey).map((s) => this.enrichSession(s));
+      this.sendJson(res, 200, { sessions });
       return;
     }
 

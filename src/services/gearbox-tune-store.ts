@@ -34,14 +34,6 @@ export interface ShiftLightPercents {
   redline: number;
 }
 
-/** SimHub's own defaults (90%/95%/96% of max RPM) - a reasonable starting
- * point with no car-specific data needed. */
-export const DEFAULT_SHIFT_LIGHT_PERCENTS: ShiftLightPercents = {
-  light1: 0.9,
-  light2: 0.95,
-  redline: 0.96,
-};
-
 export interface GearboxTune {
   id: string;
   carOrdinal: number;
@@ -62,8 +54,8 @@ export interface GearboxTune {
    * "the engine can physically reach 9499 but I want the redline marker at
    * 9000") - undefined means redline equals the effective max RPM. */
   redlineOverride?: number;
-  /** Per-tune override of the shift-light thresholds - undefined means use
-   * DEFAULT_SHIFT_LIGHT_PERCENTS. */
+  /** Per-tune override of the shift-light thresholds - undefined means fall
+   * back to the persisted general default (see settings-store.ts). */
   shiftLightPercents?: ShiftLightPercents;
   createdAt: string;
   updatedAt: string;
@@ -143,6 +135,13 @@ export class GearboxTuneStore {
     return readCsvRows(this.filePath(TUNES_FILE))
       .filter((row) => Number(row[1]) === carOrdinal)
       .map((row) => this.hydrateTune(row));
+  }
+
+  /** Every tune across every car - the Car Settings tree's data source
+   * (grouped by carOrdinal client-side), unlike listTunes which requires
+   * already knowing which car to ask about. */
+  listAllTunes(): GearboxTune[] {
+    return readCsvRows(this.filePath(TUNES_FILE)).map((row) => this.hydrateTune(row));
   }
 
   getTune(id: string): GearboxTune | null {

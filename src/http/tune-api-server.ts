@@ -7,12 +7,15 @@
 
 import * as http from "http";
 import { GearboxTuneStore } from "../services/gearbox-tune-store";
+import { lookupCarInfo } from "../services/car-database";
+import { SettingsStore, GeneralSettings } from "../services/settings-store";
 
 export class TuneApiServer {
   private server: http.Server;
 
   constructor(
     private readonly store: GearboxTuneStore,
+    private readonly settingsStore: SettingsStore,
     private readonly port: number = 3002,
   ) {
     this.server = http.createServer((req, res) => this.handleRequest(req, res));
@@ -82,8 +85,39 @@ export class TuneApiServer {
     body: any,
     res: http.ServerResponse,
   ): void {
+    // GET/PUT /settings/general - the persisted global shift-light defaults
+    // (SimHub's "General settings" tab equivalent). Not nested under /tunes
+    // since it isn't tied to any one car.
+    if (segments[0] === "settings" && segments[1] === "general") {
+      if (method === "GET") {
+        this.sendJson(res, 200, this.settingsStore.getGeneralSettings());
+        return;
+      }
+      if (method === "PUT") {
+        const settings: GeneralSettings = { shiftLightPercents: body?.shiftLightPercents };
+        if (!settings.shiftLightPercents) {
+          this.sendJson(res, 400, { error: "shiftLightPercents is required" });
+          return;
+        }
+        this.settingsStore.setGeneralSettings(settings);
+        this.sendJson(res, 200, settings);
+        return;
+      }
+    }
+
     if (segments[0] !== "tunes") {
       this.sendJson(res, 404, { error: "Not found" });
+      return;
+    }
+
+    // GET /tunes/all - every tune across every car, each with its car name
+    // resolved server-side - the Car Settings tree's data source.
+    if (segments[1] === "all" && method === "GET") {
+      const tunes = this.store.listAllTunes().map((tune) => ({
+        ...tune,
+        carInfo: lookupCarInfo(tune.carOrdinal),
+      }));
+      this.sendJson(res, 200, { tunes });
       return;
     }
 

@@ -13,16 +13,17 @@ import {
   GearboxTuneStore,
   GearboxTune,
   ShiftLightPercents,
-  DEFAULT_SHIFT_LIGHT_PERCENTS,
 } from "../services/gearbox-tune-store";
 import { RpmCeilingTracker } from "../services/rpm-ceiling-tracker";
 import { SessionRecorder } from "../services/session-recorder";
+import { SettingsStore } from "../services/settings-store";
 
 export class TelemetryProcessor {
   private physicsValidator: PhysicsValidator;
   private rpmCeilingTracker: RpmCeilingTracker;
   private gearboxTuneStore: GearboxTuneStore;
   private sessionRecorder: SessionRecorder;
+  private settingsStore: SettingsStore;
   private lastBuildKey: string | null = null;
   /** Set from handleCarChange whenever a GearboxTune is active for the
    * current car - null means no tune has been selected for it. */
@@ -32,11 +33,13 @@ export class TelemetryProcessor {
     debugMode = false,
     gearboxTuneStore: GearboxTuneStore = new GearboxTuneStore(),
     sessionRecorder: SessionRecorder = new SessionRecorder(),
+    settingsStore: SettingsStore = new SettingsStore(),
   ) {
     this.physicsValidator = new PhysicsValidator(debugMode);
     this.rpmCeilingTracker = new RpmCeilingTracker();
     this.gearboxTuneStore = gearboxTuneStore;
     this.sessionRecorder = sessionRecorder;
+    this.settingsStore = settingsStore;
   }
 
   /**
@@ -101,8 +104,9 @@ export class TelemetryProcessor {
    *    maxRpmOverride, which takes precedence over engine.maxRpm.
    *  - redline: redlineOverride if set, otherwise equal to the effective
    *    maxRpm above (matches SimHub's "redline = maxRpm" baseline).
-   *  - shiftLightPercents: the tune's own if set, otherwise
-   *    DEFAULT_SHIFT_LIGHT_PERCENTS (SimHub's 90/95/96% defaults).
+   *  - shiftLightPercents: the tune's own if set, otherwise the persisted
+   *    general default (see settings-store.ts - itself seeded from SimHub's
+   *    90/95/96% on first run).
    */
   private computeEffectiveRpm(
     telemetry: TelemetryData,
@@ -113,7 +117,8 @@ export class TelemetryProcessor {
       tune?.maxRpmOverride ??
       telemetry.engine.maxRpm;
     const redline = tune?.redlineOverride ?? maxRpm;
-    const shiftLightPercents = tune?.shiftLightPercents ?? DEFAULT_SHIFT_LIGHT_PERCENTS;
+    const shiftLightPercents =
+      tune?.shiftLightPercents ?? this.settingsStore.getGeneralSettings().shiftLightPercents;
     return { maxRpm, redline, shiftLightPercents };
   }
 

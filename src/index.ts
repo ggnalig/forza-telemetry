@@ -13,6 +13,7 @@ import { GearboxTuneStore } from "./services/gearbox-tune-store";
 import { TuneApiServer } from "./http/tune-api-server";
 import { SessionRecorder } from "./services/session-recorder";
 import { SessionApiServer } from "./http/session-api-server";
+import { SettingsStore } from "./services/settings-store";
 
 class CarDashTelemetrySystem {
   private udpListener: UdpListener;
@@ -27,6 +28,7 @@ class CarDashTelemetrySystem {
 
   constructor() {
     const gearboxTuneStore = new GearboxTuneStore();
+    const settingsStore = new SettingsStore();
     this.sessionRecorder = new SessionRecorder();
 
     this.udpListener = new UdpListener(7300);
@@ -34,11 +36,12 @@ class CarDashTelemetrySystem {
       false,
       gearboxTuneStore,
       this.sessionRecorder,
+      settingsStore,
     );
     this.webSocketServer = new WebSocketServer(3001);
     this.telemetryLogger = new TelemetryLogger();
-    this.tuneApiServer = new TuneApiServer(gearboxTuneStore, 3002);
-    this.sessionApiServer = new SessionApiServer(this.sessionRecorder, 3003);
+    this.tuneApiServer = new TuneApiServer(gearboxTuneStore, settingsStore, 3002);
+    this.sessionApiServer = new SessionApiServer(this.sessionRecorder, gearboxTuneStore, 3003);
 
     this.setupEventHandlers();
   }
